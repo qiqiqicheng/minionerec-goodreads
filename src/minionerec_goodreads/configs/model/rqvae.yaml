@@ -1,0 +1,31 @@
+_target_: minionerec_goodreads.models.rqvae.RQVAEModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 0.001
+  weight_decay: 0.0001
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  _partial_: true
+  mode: min
+  factor: 0.5
+  patience: 5
+
+use_sk: true
+
+rqvae:
+  _target_: minionerec_goodreads.models.rqvae.RQVAE
+  in_dim: 768
+  layers: [512, 256]
+  emb_dim: 64
+  rq:
+    _target_: minionerec_goodreads.models.rqvae.ResidualVectorQuantizer
+    emb_dim: 64
+    loss_beta: 0.25
+    codebook_size_list: [256, 256, 256]
+    kmeans_init: true
+    kmeans_iters: 20
+    sk_temp: 0.01
+    sk_iters: 100

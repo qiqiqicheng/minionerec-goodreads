@@ -1,0 +1,28 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - paths: default
+  - extras: default
+  - hydra: default
+  - optional local: default
+
+  - debug: null
+
+# preprocess
+data_dir: ${paths.data_dir}/raw
+output_dir: ${paths.data_dir}/processed/rqvae
+books_file: goodreads_books_mystery_thriller_crime.json
+interactions_file: goodreads_interactions_mystery_thriller_crime.json
+reviews_file: goodreads_reviews_mystery_thriller_crime.json
+min_review_rating: 3
+min_review_words: 50
+min_description_words: 20
+history_max_len: 100
+shelf_topk: 5
+
+# other configs
+task_name: "rqvae_data_preprocess"
+tags: ["rqvae", "goodreads", "preprocess"]
+seed: 728
+optimized_metric: null

@@ -1,0 +1,34 @@
+# @package _global_
+
+# python -m minionerec_goodreads.scripts.train experiment=rqvae_goodreads
+
+defaults:
+  - override /data: rqvae
+  - override /model: rqvae
+  - override /callbacks: default
+  - override /trainer: default
+
+optimized_metric: val/total_loss
+tags: ["goodreads", "rqvae"]
+
+seed: 728
+
+data:
+  batch_size: 256
+  num_workers: 0
+
+trainer:
+  accelerator: cpu
+  devices: 1
+  min_epochs: 1
+  max_epochs: 50
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint:
+    monitor: val/total_loss
+    mode: min
+  early_stopping:
+    monitor: val/total_loss
+    mode: min
+    patience: 10
