@@ -11,6 +11,7 @@ import torch
 from accelerate import Accelerator
 from accelerate.utils import gather_object
 from omegaconf import DictConfig
+from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from minionerec_goodreads.utils import RankedLogger, extras, task_wrapper
@@ -62,8 +63,13 @@ def encode_items(
 
     outputs = []
     model.eval()
+
+    steps = range(0, len(local_items), batch_size)
+    if accelerator.is_local_main_process:
+        steps = tqdm(steps, desc="Encoding Items")
+
     with torch.no_grad():
-        for offset in range(0, len(local_items), batch_size):
+        for offset in steps:
             batch_items = local_items[offset : offset + batch_size]
             batch_ids = [item_id for item_id, _ in batch_items]
             batch_texts = [text for _, text in batch_items]
@@ -100,8 +106,9 @@ def text2emb(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
         target_dtype = torch.float16
     else:
         target_dtype = torch.float32
-
+    log.info(f"Using target dtype {target_dtype} and accelerator device {accelerator.device}")
     item_texts = load_item_texts(item_path)
+    log.info(f"Loaded {len(item_texts)} items from {item_path}")
     tokenizer = AutoTokenizer.from_pretrained(cfg.plm_checkpoint, trust_remote_code=True)
     model = AutoModel.from_pretrained(
         cfg.plm_checkpoint,

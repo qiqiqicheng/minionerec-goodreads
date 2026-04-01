@@ -2,7 +2,6 @@
 
 defaults:
   - _self_
-  - text2emb_default
   - paths: default
   - extras: default
   - hydra: default
@@ -11,7 +10,7 @@ defaults:
 # text2emb
 item_path: ${paths.data_dir}/processed/rqvae/goodreads.item.json
 output_path: ${paths.data_dir}/processed/rqvae/goodreads.emb-bge.npy
-plm_checkpoint: BAAI/bge-base-en-v1.5
+plm_checkpoint: /Users/avalanche/hf-download/embedding/Qwen3-Embedding-4B
 batch_size: 128
 max_length: 1024
 
