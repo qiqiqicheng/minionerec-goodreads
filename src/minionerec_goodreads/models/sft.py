@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from importlib.util import find_spec
+from typing import Any, Callable
+
+import lightning as L
+import torch
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+
+from minionerec_goodreads.utils.sft import build_tokenizer
+
+
+def _resolve_dtype(name: str) -> torch.dtype:
+    dtype_map = {
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }
+    if name not in dtype_map:
+        raise ValueError(f"Unsupported dtype name: {name}")
+    return dtype_map[name]
+
+
+def _import_bitsandbytes() -> None:
+    if find_spec("bitsandbytes") is None:
+        raise ImportError("QLoRA requires bitsandbytes to be installed")
+
+
+def _import_peft() -> tuple[Any, Any, Any, Any]:
+    try:
+        from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+    except ImportError as error:
+        raise ImportError("QLoRA requires peft to be installed") from error
+    return LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+
+
+@dataclass
+class TrainableRange:
+    start: int
+    end: int
+
+
+class SFTModule(L.LightningModule):
+    def __init__(
+        self,
+        pretrained_model_name_or_path: str,
+        sid_index_path: str,
+        train_mode: str,
+        warmup_ratio: float,
+        gradient_checkpointing: bool,
+        torch_dtype: str,
+        optimizer: Callable,
+        scheduler: Callable | None,
+        lora_r: int = 16,
+        lora_alpha: int = 32,
+        lora_dropout: float = 0.05,
+        lora_target_modules: list[str] | None = None,
+        load_in_4bit: bool = True,
+        bnb_4bit_compute_dtype: str = "bfloat16",
+        bnb_4bit_quant_type: str = "nf4",
+        bnb_4bit_use_double_quant: bool = True,
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        self._optimizer = optimizer
+        self._scheduler = scheduler
+
+        self.tokenizer, sid_index, self.original_vocab_size = build_tokenizer(
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            sid_index_path=sid_index_path,
+        )
+        self.sid_index = sid_index
+        self.trainable_range: TrainableRange | None = None
+
+        if train_mode == "qlora":
+            self.model = self._build_qlora_model()
+        else:
+            self.model = self._build_dense_model()
+
+        self._configure_trainable_parameters()
+
+    def _build_dense_model(self) -> torch.nn.Module:
+        model = AutoModelForCausalLM.from_pretrained(
+            self.hparams.pretrained_model_name_or_path,
+            torch_dtype=_resolve_dtype(self.hparams.torch_dtype),
+            trust_remote_code=True,
+        )
+        model.resize_token_embeddings(len(self.tokenizer))
+        if self.hparams.gradient_checkpointing:
+            model.gradient_checkpointing_enable()
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+            model.config.use_cache = False
+        return model
+
+    def _build_qlora_model(self) -> torch.nn.Module:
+        if not torch.cuda.is_available():
+            raise RuntimeError("QLoRA requires CUDA. Use full_finetune or new_token_only.")
+        _import_bitsandbytes()
+        LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training = _import_peft()
+
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=self.hparams.load_in_4bit,
+            bnb_4bit_compute_dtype=_resolve_dtype(self.hparams.bnb_4bit_compute_dtype),
+            bnb_4bit_quant_type=self.hparams.bnb_4bit_quant_type,
+            bnb_4bit_use_double_quant=self.hparams.bnb_4bit_use_double_quant,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            self.hparams.pretrained_model_name_or_path,
+            torch_dtype=_resolve_dtype(self.hparams.torch_dtype),
+            quantization_config=quantization_config,
+            trust_remote_code=True,
+        )
+        model.resize_token_embeddings(len(self.tokenizer))
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=self.hparams.gradient_checkpointing)
+        lora_config = LoraConfig(
+            r=self.hparams.lora_r,
+            lora_alpha=self.hparams.lora_alpha,
+            lora_dropout=self.hparams.lora_dropout,
+            target_modules=self.hparams.lora_target_modules,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+        )
+        model = get_peft_model(model, lora_config)
+        model.config.use_cache = False
+        return model
+
+    def _configure_trainable_parameters(self) -> None:
+        if self.hparams.train_mode == "full_finetune":
+            self._enable_full_finetune()
+            return
+        if self.hparams.train_mode == "qlora":
+            self._validate_qlora_parameters()
+            return
+        if self.hparams.train_mode == "new_token_only":
+            self._enable_new_token_only()
+            return
+        raise ValueError(f"Unsupported train_mode: {self.hparams.train_mode}")
+
+    def _enable_full_finetune(self) -> None:
+        for parameter in self.model.parameters():
+            parameter.requires_grad = True
+
+    def _validate_qlora_parameters(self) -> None:
+        trainable_count = sum(parameter.requires_grad for parameter in self.model.parameters())
+        if trainable_count == 0:
+            raise ValueError("QLoRA did not expose any trainable parameters")
+
+    def _enable_new_token_only(self) -> None:
+        if len(self.tokenizer) <= self.original_vocab_size:
+            raise ValueError("new_token_only requires tokenizer resize with new SID tokens")
+
+        for parameter in self.model.parameters():
+            parameter.requires_grad = False
+
+        embedding = self.model.get_input_embeddings()
+        if embedding is None:
+            raise ValueError("Model must expose input embeddings")
+        embedding.weight.requires_grad = True
+        trainable_range = TrainableRange(start=self.original_vocab_size, end=embedding.weight.shape[0])
+        self._register_row_mask(embedding.weight, trainable_range)
+
+        self._enable_output_embedding_if_needed(embedding.weight, trainable_range)
+        self.trainable_range = trainable_range
+
+        trainable_count = sum(parameter.requires_grad for parameter in self.model.parameters())
+        if trainable_count == 0:
+            raise ValueError("new_token_only mode left the model with zero trainable parameters")
+
+    def _enable_output_embedding_if_needed(
+        self,
+        input_embedding_weight: torch.nn.Parameter,
+        trainable_range: TrainableRange,
+    ) -> None:
+        output_embedding = self.model.get_output_embeddings()
+        if output_embedding is None or output_embedding.weight is input_embedding_weight:
+            return
+        output_embedding.weight.requires_grad = True
+        self._register_row_mask(output_embedding.weight, trainable_range)
+
+    def _register_row_mask(self, weight: torch.nn.Parameter, trainable_range: TrainableRange) -> None:
+        def mask_gradient(grad: torch.Tensor) -> torch.Tensor:
+            grad[: trainable_range.start].zero_()  # [V_old, H]
+            return grad
+
+        weight.register_hook(mask_gradient)
+
+    def forward(self, batch: dict[str, torch.Tensor]) -> Any:
+        return self.model(**batch)
+
+    def _shared_step(self, batch: dict[str, torch.Tensor], stage: str) -> torch.Tensor:
+        outputs = self(batch)
+        loss = outputs.loss
+        if not torch.isfinite(loss):
+            raise ValueError(f"Non-finite {stage} loss: {loss}")
+        self.log(f"{stage}/loss", loss, prog_bar=(stage != "test"), on_step=False, on_epoch=True, batch_size=batch["input_ids"].shape[0])
+        return loss
+
+    def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        _ = batch_idx
+        return self._shared_step(batch, stage="train")
+
+    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        _ = batch_idx
+        return self._shared_step(batch, stage="val")
+
+    def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        _ = batch_idx
+        return self._shared_step(batch, stage="test")
+
+    def configure_optimizers(self) -> dict[str, Any]:
+        named_parameters = [(name, parameter) for name, parameter in self.named_parameters() if parameter.requires_grad]
+        if not named_parameters:
+            raise ValueError("No trainable parameters found for optimizer construction")
+
+        decay_parameters = []
+        no_decay_parameters = []
+        for name, parameter in named_parameters:
+            if parameter.ndim == 1 or name.endswith(".bias") or "norm" in name.lower():
+                no_decay_parameters.append(parameter)
+            else:
+                decay_parameters.append(parameter)
+
+        parameter_groups = [
+            {"params": decay_parameters},
+            {"params": no_decay_parameters, "weight_decay": 0.0},
+        ]
+        optimizer = self._optimizer(parameter_groups)
+
+        if self._scheduler is None:
+            return {"optimizer": optimizer}
+
+        total_steps = self.trainer.estimated_stepping_batches
+        warmup_steps = int(total_steps * self.hparams.warmup_ratio)
+        scheduler = self._scheduler(
+            optimizer=optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
+        )
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}

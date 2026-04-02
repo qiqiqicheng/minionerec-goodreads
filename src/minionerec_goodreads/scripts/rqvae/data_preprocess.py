@@ -226,15 +226,15 @@ def dump_csv(rows: list[list[object]], path: Path) -> None:
         writer = csv.writer(file)
         writer.writerow([
             "user_id",
-            "item_asins",
-            "item_asin",
-            "history_item_id",
+            "history_book_ids",
+            "book_id",
+            "history_item_ids",
             "item_id",
-            "history_item_title",
+            "history_titles",
             "item_title",
-            "history_rating",
+            "history_ratings",
             "rating",
-            "history_timestamp",
+            "history_timestamps",
             "timestamp",
         ])
         writer.writerows(rows)

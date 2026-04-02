@@ -31,7 +31,7 @@ class RQVAEDataModule(L.LightningDataModule):
         train_ratio: float = 0.9,
         valid_ratio: float = 0.1,
         test_ratio: float = 0.0,
-        seed: int = 42,
+        seed: int = 728,
         persistent_workers: bool = False,
     ):
         super().__init__()

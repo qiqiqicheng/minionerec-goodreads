@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - model: rqvae
+  - paths: default
+  - extras: default
+  - hydra: default
+  - optional local: default
+
+item_path: ${paths.data_dir}/processed/rqvae/goodreads.item.json
+embedding_path: ${paths.data_dir}/processed/rqvae/goodreads.emb-bge.npy
+output_path: ${paths.data_dir}/processed/rqvae/goodreads.index.json
+ckpt_path: null
+batch_size: 1024
+num_workers: 0
+pin_memory: False
+use_sk_infer: False
+
+# other configs
+task_name: "rqvae_generate_sid"
+tags: ["rqvae", "goodreads", "sid"]
+seed: 728
+optimized_metric: null

@@ -1,0 +1,30 @@
+_target_: minionerec_goodreads.models.sft.SFTModule
+
+pretrained_model_name_or_path: ${data.pretrained_model_name_or_path}
+sid_index_path: ${data.sid_index_path}
+train_mode: "qlora"
+warmup_ratio: 0.03
+gradient_checkpointing: True
+torch_dtype: "bfloat16"
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 2e-4
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+scheduler:
+  _target_: transformers.get_cosine_schedule_with_warmup
+  _partial_: true
+
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"]
+
+load_in_4bit: True
+bnb_4bit_compute_dtype: "bfloat16"
+bnb_4bit_quant_type: "nf4"
+bnb_4bit_use_double_quant: True

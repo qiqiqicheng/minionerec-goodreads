@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: sft
+  - model: sft_new_token_only
+  - callbacks: sft
+  - logger: null
+  - trainer: default
+  - paths: default
+  - extras: default
+  - hydra: default
+  - optional local: default
+
+  - experiment: null
+  - debug: null
+
+task_name: "train_sft"
+tags: ["sft", "goodreads"]
+
+train: True
+test: True
+ckpt_path: null
+
+seed: 728
+optimized_metric: "val/loss"
