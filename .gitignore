@@ -21,6 +21,8 @@ __pycache__/
 
 .claude
 
+tmp
+
 /checkpoints
 
 # Distribution / packaging

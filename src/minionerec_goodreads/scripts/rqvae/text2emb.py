@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,6 @@ from transformers import AutoModel, AutoTokenizer
 from minionerec_goodreads.utils import RankedLogger, extras, task_wrapper
 
 log = RankedLogger(__name__, rank_zero_only=True)
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
 
 def load_item_texts(item_path: Path) -> list[tuple[int, str]]:
@@ -83,7 +83,7 @@ def encode_items(
             hidden = model(**encoded).last_hidden_state  # [B, L, D]
             pooled = mean_pool(hidden, encoded.attention_mask).cpu().numpy()  # [B, D]
 
-            pooled_np = pooled.detach().cpu().numpy()  # type: ignore
+            # pooled_np = pooled.detach().cpu().numpy()
 
             for item_id, embedding in zip(batch_ids, pooled):
                 outputs.append((item_id, embedding))
@@ -103,12 +103,17 @@ def text2emb(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     output_path = Path(cfg.output_path)
 
     if torch.cuda.is_available() or torch.backends.mps.is_available():
-        target_dtype = torch.float16
+        target_dtype = torch.bfloat16
     else:
         target_dtype = torch.float32
-    log.info(f"Using target dtype {target_dtype} and accelerator device {accelerator.device}")
+    
+    # target_device = torch.device(cfg.device) if torch.cuda.is_available() else accelerator.device    
+    target_device = accelerator.device
+    
+    log.info(f"Using target dtype: {target_dtype} and device: {target_device}")
     item_texts = load_item_texts(item_path)
     log.info(f"Loaded {len(item_texts)} items from {item_path}")
+    
     tokenizer = AutoTokenizer.from_pretrained(cfg.plm_checkpoint, trust_remote_code=True)
     model = AutoModel.from_pretrained(
         cfg.plm_checkpoint,

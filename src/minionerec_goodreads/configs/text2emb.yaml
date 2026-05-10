@@ -10,10 +10,10 @@ defaults:
 # text2emb
 item_path: ${paths.data_dir}/processed/rqvae/goodreads.item.json
 output_path: ${paths.data_dir}/processed/rqvae/goodreads.emb-bge.npy
-plm_checkpoint: /Users/avalanche/hf-download/embedding/Qwen3-Embedding-4B
-# plm_checkpoint: /mnt/disk2/chengqi/models/embedding/Qwen3-Embedding-4B
-batch_size: 128
-max_length: 1024
+plm_checkpoint: /mnt/disk2/chengqi/models/embedding/Qwen3-Embedding-4B
+batch_size: 24
+max_length: 2048
+device: "cuda:5"
 
 # other configs
 task_name: "rqvae_text2emb"
