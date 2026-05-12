@@ -3,6 +3,11 @@ data: ## Install the virtual environment and install the pre-commit hooks
 	@uv sync
 	@uv run python -m src.minionerec_goodreads.scripts.rqvae.data_preprocess
 
+.PHONY: eda
+eda: ## Run raw data EDA and write notes
+	@uv sync
+	@uv run python -m src.minionerec_goodreads.scripts.eda
+
 .PHONY: embedding
 embedding: ## Install the virtual environment and install the pre-commit hooks
 	@uv sync

@@ -1,0 +1,32 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - paths: default
+  - extras: default
+  - hydra: default
+  - optional local: default
+
+  - debug: null
+
+# eda
+data_dir: ${paths.data_dir}/raw
+books_file: goodreads_books_mystery_thriller_crime.json
+interactions_file: goodreads_interactions_mystery_thriller_crime.json
+reviews_file: goodreads_reviews_mystery_thriller_crime.json
+output_markdown: ${paths.root_dir}/notes/eda.md
+output_json: ${paths.root_dir}/notes/eda_metrics.json
+
+# mirror preprocessing knobs for apples-to-apples diagnostics
+min_review_rating: 3
+min_review_words: 50
+min_description_words: 20
+history_max_len: 100
+target_start: "2016-09-01"
+target_end: "2017-12-31"
+
+# other configs
+task_name: "eda"
+tags: ["eda", "goodreads"]
+seed: 728
+optimized_metric: null
