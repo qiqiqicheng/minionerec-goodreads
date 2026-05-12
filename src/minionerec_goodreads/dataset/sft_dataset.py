@@ -25,11 +25,30 @@ from transformers import PreTrainedTokenizerBase
 
 from minionerec_goodreads.utils.sft import build_item_sid_map, build_tokenizer
 
+EXPECTED_SPLIT_COLUMNS = [
+    "user_id",
+    "history_book_ids",
+    "book_id",
+    "history_item_ids",
+    "item_id",
+    "history_titles",
+    "item_title",
+    "history_ratings",
+    "rating",
+    "history_timestamps",
+    "timestamp",
+]
+
 
 def load_split_csv(path: str | Path) -> list[dict[str, str]]:
     csv_path = Path(path)
     with csv_path.open("r", encoding="utf-8", newline="") as file:
         reader = csv.DictReader(file)
+        actual_columns = reader.fieldnames or []
+        if actual_columns != EXPECTED_SPLIT_COLUMNS:
+            raise ValueError(
+                f"Unexpected split columns in {csv_path}: expected {EXPECTED_SPLIT_COLUMNS}, got {actual_columns}"
+            )
         rows = list(reader)
     if not rows:
         raise ValueError(f"Empty split file: {csv_path}")

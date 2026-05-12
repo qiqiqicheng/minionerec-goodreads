@@ -86,7 +86,7 @@ def build_item_text(
     fallback_review: dict[str, Any] | None,
     min_description_words: int,
     shelf_topk: int,
-) -> tuple[str, str]:
+) -> tuple[str, str] | None:
     title = normalize_text(book.get("title", ""))
     title_without_series = normalize_text(book.get("title_without_series", ""))
     description = normalize_text(book.get("description", ""))
@@ -95,19 +95,15 @@ def build_item_text(
     series_ids = [str(series_id) for series_id in book.get("series", []) if str(series_id).strip()]
 
     if title == "":
-        raise ValueError(f"Missing title for book_id={book['book_id']}")
+        return None
 
     body = description
     body_source = "description"
     if count_words(description) < min_description_words:
         if fallback_review is None:
-            if description == "":
-                log.warning(f"No usable text for book_id={book['book_id']}")
-                body = "No description or review available."
-                body_source = "none"
-        else:
-            body = fallback_review["text"]
-            body_source = "review"
+            return None
+        body = fallback_review["text"]
+        body_source = "review"
 
     parts = [f"Title: {title}"]
     if title_without_series and title_without_series != title:
@@ -149,14 +145,29 @@ def build_item_artifacts(
 ) -> tuple[dict[str, int], dict[str, dict[str, Any]], dict[str, int]]:
     item2id: dict[str, int] = {}
     item_payload: dict[str, dict[str, Any]] = {}
-    stats = {"num_items": 0, "description_source": 0, "review_source": 0, "none_source": 0}
+    stats = {
+        "num_items": 0,
+        "description_source": 0,
+        "review_source": 0,
+        "skipped_no_text": 0,
+        "skipped_missing_title": 0,
+    }
 
     item_id = 0
+    seen_book_ids = set()
     for book in iter_jsonl(books_path):
         book_id = book["book_id"]
         if book_id not in kept_book_ids:
             continue
-        item_text, body_source = build_item_text(book, review_fallbacks.get(book_id), min_description_words, shelf_topk)
+        seen_book_ids.add(book_id)
+        item_text_result = build_item_text(book, review_fallbacks.get(book_id), min_description_words, shelf_topk)
+        if item_text_result is None:
+            if normalize_text(book.get("title", "")) == "":
+                stats["skipped_missing_title"] += 1
+            else:
+                stats["skipped_no_text"] += 1
+            continue
+        item_text, body_source = item_text_result
         item2id[book_id] = item_id
         item_payload[str(item_id)] = {
             "book_id": book_id,
@@ -172,9 +183,9 @@ def build_item_artifacts(
         stats[f"{body_source}_source"] += 1
         item_id += 1
 
-    if len(item2id) != len(kept_book_ids):
-        missing = kept_book_ids.difference(item2id)
-        raise ValueError(f"Missing books after metadata build: {len(missing)}")
+    missing = kept_book_ids.difference(seen_book_ids)
+    if missing:
+        raise ValueError(f"Missing books after metadata scan: {len(missing)}")
 
     stats["num_items"] = len(item2id)
     return item2id, item_payload, stats
@@ -259,7 +270,8 @@ def preprocess(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
         min_description_words=cfg.min_description_words,
         shelf_topk=cfg.shelf_topk,
     )
-    rows = build_rows(interactions, item2id, item_payload, cfg.history_max_len)
+    filtered_interactions = [row for row in interactions if row["book_id"] in item2id]
+    rows = build_rows(filtered_interactions, item2id, item_payload, cfg.history_max_len)
 
     train_end = int(len(rows) * 0.8)
     valid_end = int(len(rows) * 0.9)
@@ -275,9 +287,11 @@ def preprocess(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
         json.dump(item2id, file, ensure_ascii=False, indent=2)
 
     metrics = {
-        "num_interactions": len(interactions),
+        "num_interactions_raw": len(interactions),
+        "num_interactions": len(filtered_interactions),
+        "num_filtered_interactions": len(interactions) - len(filtered_interactions),
         "num_rows": len(rows),
-        "num_users": len({row["user_id"] for row in interactions}),
+        "num_users": len({row["user_id"] for row in filtered_interactions}),
         **item_stats,
     }
     with (output_dir / "stats.json").open("w", encoding="utf-8") as file:

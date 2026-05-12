@@ -96,7 +96,7 @@ def train(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     return metric_dict, object_dict
 
 
-@hydra.main(version_base="1.3", config_path="../configs", config_name="train_rqvae.yaml")
+@hydra.main(version_base="1.3", config_path="../../configs", config_name="train_rqvae.yaml")
 def main(cfg: DictConfig) -> Optional[float]:
     """Main entry point for training.
 

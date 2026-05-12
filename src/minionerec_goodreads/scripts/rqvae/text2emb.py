@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import hydra
 import numpy as np
 import torch
+import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate.utils import gather_object
 from omegaconf import DictConfig
@@ -34,11 +36,13 @@ def load_item_texts(item_path: Path) -> list[tuple[int, str]]:
     return item_texts
 
 
-def mean_pool(last_hidden: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    mask = attention_mask.unsqueeze(-1).expand_as(last_hidden).float()  # [B, L, D]
-    hidden_sum = torch.sum(last_hidden * mask, dim=1)  # [B, D]
-    token_count = torch.clamp(mask.sum(dim=1), min=1e-9)  # [B, D]
-    return hidden_sum / token_count
+def last_token_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
+    if left_padding:
+        return last_hidden_states[:, -1]
+    sequence_lengths = attention_mask.sum(dim=1) - 1
+    batch_size = last_hidden_states.shape[0]
+    return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
 
 
 def encode_items(
@@ -55,7 +59,7 @@ def encode_items(
     end = min(start + chunk_size, num_items)
     local_items = item_texts[start:end]
 
-    tokenizer.padding_side = "right"
+    tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token or tokenizer.unk_token
     if tokenizer.pad_token is None:
@@ -81,9 +85,8 @@ def encode_items(
                 return_tensors="pt",
             ).to(accelerator.device)
             hidden = model(**encoded).last_hidden_state  # [B, L, D]
-            pooled = mean_pool(hidden, encoded.attention_mask).cpu().numpy()  # [B, D]
-
-            # pooled_np = pooled.detach().cpu().numpy()
+            pooled = last_token_pool(hidden, encoded.attention_mask)  # [B, D]
+            pooled = F.normalize(pooled, p=2, dim=1).float().cpu().numpy()  # [B, D]
 
             for item_id, embedding in zip(batch_ids, pooled):
                 outputs.append((item_id, embedding))
@@ -102,19 +105,16 @@ def text2emb(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     item_path = Path(cfg.item_path)
     output_path = Path(cfg.output_path)
 
-    if torch.cuda.is_available() or torch.backends.mps.is_available():
-        target_dtype = torch.bfloat16
-    else:
-        target_dtype = torch.float32
-    
-    # target_device = torch.device(cfg.device) if torch.cuda.is_available() else accelerator.device    
+    target_dtype = torch.bfloat16 if torch.cuda.is_available() or torch.backends.mps.is_available() else torch.float32
+
+    # target_device = torch.device(cfg.device) if torch.cuda.is_available() else accelerator.device
     target_device = accelerator.device
-    
+
     log.info(f"Using target dtype: {target_dtype} and device: {target_device}")
     item_texts = load_item_texts(item_path)
     log.info(f"Loaded {len(item_texts)} items from {item_path}")
-    
-    tokenizer = AutoTokenizer.from_pretrained(cfg.plm_checkpoint, trust_remote_code=True)
+
+    tokenizer = AutoTokenizer.from_pretrained(cfg.plm_checkpoint, trust_remote_code=True, padding_side="left")
     model = AutoModel.from_pretrained(
         cfg.plm_checkpoint,
         trust_remote_code=True,

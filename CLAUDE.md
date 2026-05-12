@@ -1,7 +1,7 @@
 这是一个基于 MiniOneRec 生成式推荐范式的推荐系统项目，使用 GoodReads 数据集中的 mystery thriller crime 类别的从 2016 年 9 月到 2017 年 12 月的满足 k-core=30 的数据
 我希望复现这篇文章的完整工作，目标是针对推荐算法 / LLM 岗位的面试拷打，同时夯实一些和 SID，rqvae 等推荐系统前沿的内容
 
-原始论文见 notes/paper.md
+原始论文见 notes/paper.md，但是推荐先阅读省流版的 notes/paper_reduced.md；原始数据的样本见 data/info.md
 
 如果需要编写代码，请注意：
 1. 使用 uv 管理环境，使用 Makefile 来管理命令

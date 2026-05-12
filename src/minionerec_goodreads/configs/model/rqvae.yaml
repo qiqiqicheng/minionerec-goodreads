@@ -14,10 +14,12 @@ scheduler:
   patience: 5
 
 use_sk: true
+kmeans_sample_size: 8192
+kmeans_sample_seed: ${seed}
 
 rqvae:
   _target_: minionerec_goodreads.models.rqvae.RQVAE
-  in_dim: 768
+  in_dim: 2560
   layers: [512, 256]
   emb_dim: 64
   rq:
@@ -27,5 +29,6 @@ rqvae:
     codebook_size_list: [256, 256, 256]
     kmeans_init: true
     kmeans_iters: 20
+    kmeans_seed: ${seed}
     sk_temp: 0.01
     sk_iters: 100

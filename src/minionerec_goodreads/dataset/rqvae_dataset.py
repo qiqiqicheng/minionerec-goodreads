@@ -33,6 +33,7 @@ class RQVAEDataModule(L.LightningDataModule):
         test_ratio: float = 0.0,
         seed: int = 728,
         persistent_workers: bool = False,
+        embedding_dim: int | None = None,
     ):
         super().__init__()
         ratio_sum = train_ratio + valid_ratio + test_ratio
@@ -48,6 +49,7 @@ class RQVAEDataModule(L.LightningDataModule):
         self.test_ratio = test_ratio
         self.seed = seed
         self.persistent_workers = persistent_workers and num_workers > 0
+        self.embedding_dim = embedding_dim
 
         self.dataset: RQVAEDataset | None = None
         self.data_train: Subset | None = None
@@ -64,6 +66,8 @@ class RQVAEDataModule(L.LightningDataModule):
             return
 
         embeddings = np.load(self.embedding_path)
+        if self.embedding_dim is not None and embeddings.shape[1] != self.embedding_dim:
+            raise ValueError(f"Embedding dim mismatch: {embeddings.shape[1]} != configured RQ-VAE in_dim {self.embedding_dim}")
         self.dataset = RQVAEDataset(embeddings)
 
         num_items = len(self.dataset)

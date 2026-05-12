@@ -16,6 +16,9 @@ batch_size: 1024
 num_workers: 0
 pin_memory: False
 use_sk_infer: False
+compare_sk_assignments: True
+stats_output_path: null
+health_output_path: null
 
 # other configs
 task_name: "rqvae_generate_sid"

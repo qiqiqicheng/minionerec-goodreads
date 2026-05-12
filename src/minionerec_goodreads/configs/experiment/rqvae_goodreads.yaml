@@ -5,7 +5,7 @@
 defaults:
   - override /data: rqvae
   - override /model: rqvae
-  - override /callbacks: default
+  - override /callbacks: rqvae
   - override /trainer: default
 
 optimized_metric: val/total_loss
