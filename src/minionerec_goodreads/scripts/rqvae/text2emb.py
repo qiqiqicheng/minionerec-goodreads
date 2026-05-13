@@ -87,6 +87,12 @@ def encode_items(
             hidden = model(**encoded).last_hidden_state  # [B, L, D]
             pooled = last_token_pool(hidden, encoded.attention_mask)  # [B, D]
             pooled = F.normalize(pooled, p=2, dim=1).float().cpu().numpy()  # [B, D]
+            
+            if np.isnan(pooled).any():
+                log.warning(f"NaN detected in pooled embeddings for batch starting at offset {offset}")
+                for i, embedding in enumerate(pooled):
+                    if np.isnan(embedding).any():
+                        log.warning(f"NaN detected in embedding for item_id {batch_ids[i]}: {embedding}")
 
             for item_id, embedding in zip(batch_ids, pooled):
                 outputs.append((item_id, embedding))
@@ -150,3 +156,6 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# CUDA_VISIBLE_DEVICES=1

@@ -16,6 +16,9 @@ interactions_file: goodreads_interactions_mystery_thriller_crime.json
 reviews_file: goodreads_reviews_mystery_thriller_crime.json
 output_markdown: ${paths.root_dir}/notes/eda.md
 output_json: ${paths.root_dir}/notes/eda_metrics.json
+rqvae_dir: ${paths.data_dir}/processed/rqvae
+rqvae_output_markdown: ${paths.root_dir}/notes/rqvae_eda.md
+rqvae_output_json: ${paths.root_dir}/notes/rqvae_eda_metrics.json
 
 # mirror preprocessing knobs for apples-to-apples diagnostics
 min_review_rating: 3

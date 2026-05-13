@@ -309,11 +309,13 @@ class RQVAEModule(L.LightningModule):
         use_sk: bool = True,
         kmeans_sample_size: int = 4096,
         kmeans_sample_seed: int = 728,
+        scheduler_monitor: str = "val/total_loss",
     ):
         super().__init__()
         self.rqvae = rqvae
         self._optimizer = optimizer
         self._scheduler = scheduler
+        self.scheduler_monitor = scheduler_monitor
         self.use_sk = use_sk
         self.kmeans_sample_size = kmeans_sample_size
         self.kmeans_sample_seed = kmeans_sample_seed
@@ -431,7 +433,7 @@ class RQVAEModule(L.LightningModule):
         scheduler = self._scheduler(optimizer)
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "epoch", "monitor": "val/total_loss"},
+            "lr_scheduler": {"scheduler": scheduler, "interval": "epoch", "monitor": self.scheduler_monitor},
         }
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

@@ -14,13 +14,14 @@ scheduler:
   patience: 5
 
 use_sk: true
+scheduler_monitor: val/total_loss
 kmeans_sample_size: 8192
 kmeans_sample_seed: ${seed}
 
 rqvae:
   _target_: minionerec_goodreads.models.rqvae.RQVAE
   in_dim: 2560
-  layers: [512, 256]
+  layers: [1024, 512]
   emb_dim: 64
   rq:
     _target_: minionerec_goodreads.models.rqvae.ResidualVectorQuantizer

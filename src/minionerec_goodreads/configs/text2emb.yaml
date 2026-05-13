@@ -11,7 +11,7 @@ defaults:
 item_path: ${paths.data_dir}/processed/rqvae/goodreads.item.json
 output_path: ${paths.data_dir}/processed/rqvae/goodreads.emb-bge.npy
 plm_checkpoint: /mnt/disk2/chengqi/models/embedding/Qwen3-Embedding-4B
-batch_size: 24
+batch_size: 12
 max_length: 2048
 device: "cuda:5"
 

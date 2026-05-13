@@ -7,13 +7,14 @@ defaults:
   - extras: default
   - hydra: default
   - optional local: default
+  - experiment: rqvae_4_levels
 
 item_path: ${paths.data_dir}/processed/rqvae/goodreads.item.json
 embedding_path: ${paths.data_dir}/processed/rqvae/goodreads.emb-bge.npy
 output_path: ${paths.data_dir}/processed/rqvae/goodreads.index.json
-ckpt_path: null
+ckpt_path: ckpts/rqvae/epoch_050_full_catalog.ckpt  # TODO
 batch_size: 1024
-num_workers: 0
+num_workers: 12
 pin_memory: False
 use_sk_infer: False
 compare_sk_assignments: True

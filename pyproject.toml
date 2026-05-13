@@ -21,6 +21,7 @@ dependencies = [
     "transformers>=4.51.0",
     "accelerate>=1.6.0",
     "peft>=0.15.2",
+    "wandb>=0.26.1",
 ]
 classifiers = [
     "Intended Audience :: Developers",

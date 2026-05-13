@@ -82,10 +82,8 @@ class RQVAEDataModule(L.LightningDataModule):
         valid_indices = indices[train_end:valid_end].tolist()
         test_indices = indices[valid_end:].tolist()
 
-        if len(train_indices) == 0 or len(valid_indices) == 0:
-            raise ValueError(
-                f"Empty split detected with num_items={num_items}, train={len(train_indices)}, valid={len(valid_indices)}"
-            )
+        if len(train_indices) == 0:
+            raise ValueError(f"Empty train split detected with num_items={num_items}")
 
         self.data_train = Subset(self.dataset, train_indices)
         self.data_valid = Subset(self.dataset, valid_indices)
@@ -104,9 +102,11 @@ class RQVAEDataModule(L.LightningDataModule):
             drop_last=False,
         )
 
-    def val_dataloader(self) -> DataLoader:
+    def val_dataloader(self) -> DataLoader | list[DataLoader]:
         if self.data_valid is None:
             raise RuntimeError("Call setup() before requesting val_dataloader()")
+        if len(self.data_valid) == 0:
+            return []
         return DataLoader(
             dataset=self.data_valid,
             batch_size=self.batch_size,

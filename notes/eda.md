@@ -1,6 +1,6 @@
 # GoodReads Mystery-Thriller-Crime Raw EDA
 
-Generated at: 2026-05-12 03:26:17
+Generated at: 2026-05-13 05:06:48
 
 ## Configuration
 
@@ -18,60 +18,60 @@ Generated at: 2026-05-12 03:26:17
 
 ## Executive Summary
 
-- The raw subset has 16,219 books, 2,327,295 interaction rows, and 118,067 full review rows.
-- The current sequential signal keeps 552,092 read-and-rated interactions (23.72% of raw interactions), covering 25,971 users and 15,766 books.
-- The project target window 2016-09-01 to 2017-12-31 contains 537,958 read-and-rated interactions (97.44% of valid interactions).
-- The MiniOneRec-style row builder produces 526,121 next-item rows, with 514,491 targets in the project window, then uses a global chronological 80/10/10 split by target timestamp.
-- Item text is mostly book description, but the review fallback is important for short or empty descriptions: 596 valid items use review text and 292 valid items still have no usable text source.
+- The raw subset has 6,225 books, 340,019 interaction rows, and 52,885 full review rows.
+- The current sequential signal keeps 309,454 read-and-rated interactions (91.01% of raw interactions), covering 11,526 users and 6,225 books.
+- The project target window 2016-09-01 to 2017-12-31 contains 299,497 read-and-rated interactions (96.78% of valid interactions).
+- The MiniOneRec-style row builder produces 297,928 next-item rows, with 289,495 targets in the project window, then uses a global chronological 80/10/10 split by target timestamp.
+- Item text is mostly book description, but the review fallback is important for short or empty descriptions: 193 valid items use review text and 91 valid items still have no usable text source.
 
 ## Raw Files
 
 | file | rows | size_mb |
 | --- | --- | --- |
-| goodreads_books_mystery_thriller_crime.json | 16,219 | 80.14 |
-| goodreads_interactions_mystery_thriller_crime.json | 2,327,295 | 697.87 |
-| goodreads_reviews_mystery_thriller_crime.json | 118,067 | 121.87 |
+| goodreads_books_mystery_thriller_crime.json | 6,225 | 31.74 |
+| goodreads_interactions_mystery_thriller_crime.json | 340,019 | 117.11 |
+| goodreads_reviews_mystery_thriller_crime.json | 52,885 | 52.81 |
 
 ## Book Metadata
 
 | metric | value |
 | --- | --- |
-| unique_book_ids | 16,219 |
+| unique_book_ids | 6,225 |
 | duplicate_book_id_rows | 0 |
-| duplicate_title_groups | 1,238 |
-| duplicate_title_extra_rows | 1,748 |
-| duplicate_work_groups | 1,467 |
-| duplicate_work_extra_rows | 2,052 |
+| duplicate_title_groups | 336 |
+| duplicate_title_extra_rows | 415 |
+| duplicate_work_groups | 405 |
+| duplicate_work_extra_rows | 501 |
 
 ### Missing / Sparse Fields
 
 | field | missing_or_sparse | pct_books |
 | --- | --- | --- |
-| asin | 12,880 | 79.41% |
-| description | 890 | 5.49% |
-| description_lt_20_words | 924 | 5.70% |
-| isbn | 4,205 | 25.93% |
-| isbn13 | 3,783 | 23.32% |
-| language_code | 3,578 | 22.06% |
-| num_pages | 3,484 | 21.48% |
-| publication_year | 3,893 | 24.00% |
-| publisher | 4,344 | 26.78% |
-| series | 5,732 | 35.34% |
+| asin | 4,934 | 79.26% |
+| description | 280 | 4.50% |
+| description_lt_20_words | 293 | 4.71% |
+| isbn | 1,497 | 24.05% |
+| isbn13 | 1,421 | 22.83% |
+| language_code | 842 | 13.53% |
+| num_pages | 1,142 | 18.35% |
+| publication_year | 1,643 | 26.39% |
+| publisher | 1,763 | 28.32% |
+| series | 1,691 | 27.16% |
 
 ### Text And Metadata Distributions
 
 | distribution | count | min | p50 | p90 | p95 | p99 | max | mean |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| title_words | 16,219 | 1 | 5 | 9 | 10 | 13 | 26 | 5.43 |
-| description_words | 16,219 | 0 | 150 | 248 | 289 | 409.82 | 2,607 | 153.48 |
-| shelves_per_book | 16,219 | 4 | 100 | 100 | 100 | 100 | 100 | 92.67 |
-| authors_per_book | 16,219 | 1 | 1 | 2 | 2 | 3 | 51 | 1.17 |
-| series_per_book | 16,219 | 0 | 1 | 1 | 1 | 2 | 4 | 0.68 |
-| similar_books_per_book | 16,219 | 0 | 12 | 18 | 18 | 18 | 18 | 10.05 |
-| average_rating | 16,219 | 0 | 3.92 | 4.25 | 4.36 | 4.56 | 5 | 3.91 |
-| ratings_count | 16,219 | 0 | 1,069 | 9,890.80 | 18,690.80 | 66,243.48 | 2,046,499 | 5,475.22 |
-| text_reviews_count | 16,219 | 1 | 110 | 651.20 | 1,111.20 | 3,234.48 | 78,438 | 324.34 |
-| num_pages | 12,735 | 0 | 334 | 460 | 512 | 683.32 | 2,435 | 338.37 |
+| title_words | 6,225 | 1 | 6 | 9 | 10 | 12 | 26 | 5.53 |
+| description_words | 6,225 | 0 | 149 | 247 | 285 | 383.76 | 716 | 152.20 |
+| shelves_per_book | 6,225 | 12 | 100 | 100 | 100 | 100 | 100 | 98.18 |
+| authors_per_book | 6,225 | 1 | 1 | 2 | 2 | 2 | 25 | 1.13 |
+| series_per_book | 6,225 | 0 | 1 | 1 | 2 | 2 | 4 | 0.79 |
+| similar_books_per_book | 6,225 | 0 | 11 | 18 | 18 | 18 | 18 | 10.34 |
+| average_rating | 6,225 | 2.68 | 3.94 | 4.22 | 4.32 | 4.49 | 4.66 | 3.93 |
+| ratings_count | 6,225 | 49 | 3,844 | 22,892.80 | 38,982.00 | 142,936.44 | 2,046,499 | 12,392.01 |
+| text_reviews_count | 6,225 | 5 | 266 | 1,307.60 | 2,136.60 | 6,040.84 | 78,438 | 663.69 |
+| num_pages | 5,083 | 0 | 347 | 480 | 535 | 710.62 | 1,796 | 351.77 |
 
 ### Top Languages / Formats / Shelves
 
@@ -79,159 +79,158 @@ Languages:
 
 | language | books | pct_books |
 | --- | --- | --- |
-| eng | 10,266 | 63.30% |
-| <missing> | 3,578 | 22.06% |
-| en-US | 1,706 | 10.52% |
-| en-GB | 437 | 2.69% |
-| en-CA | 164 | 1.01% |
-| fre | 19 | 0.12% |
-| swe | 15 | 0.09% |
-| spa | 9 | 0.06% |
-| ger | 8 | 0.05% |
-| dan | 5 | 0.03% |
-| nor | 4 | 0.02% |
-| en | 4 | 0.02% |
-| isl | 1 | 0.01% |
-| cze | 1 | 0.01% |
-| ara | 1 | 0.01% |
+| eng | 4,273 | 68.64% |
+| <missing> | 842 | 13.53% |
+| en-US | 794 | 12.76% |
+| en-GB | 172 | 2.76% |
+| en-CA | 95 | 1.53% |
+| ben | 18 | 0.29% |
+| swe | 10 | 0.16% |
+| fre | 7 | 0.11% |
+| dan | 5 | 0.08% |
+| spa | 3 | 0.05% |
+| nor | 2 | 0.03% |
+| ger | 1 | 0.02% |
+| ara | 1 | 0.02% |
+| en | 1 | 0.02% |
+| nl | 1 | 0.02% |
 
 Formats:
 
 | format | books | pct_books |
 | --- | --- | --- |
-| Paperback | 5,819 | 35.88% |
-| <missing> | 4,166 | 25.69% |
-| Hardcover | 3,812 | 23.50% |
-| Kindle Edition | 984 | 6.07% |
-| Mass Market Paperback | 645 | 3.98% |
-| ebook | 539 | 3.32% |
-| Audio CD | 135 | 0.83% |
-| Audiobook | 26 | 0.16% |
-| Audio | 23 | 0.14% |
-| Audible Audio | 17 | 0.10% |
-| Audio Cassette | 13 | 0.08% |
-| Trade Paperback | 11 | 0.07% |
-| Unknown Binding | 10 | 0.06% |
-| Library Binding | 5 | 0.03% |
-| MP3 CD | 3 | 0.02% |
+| <missing> | 1,775 | 28.51% |
+| Paperback | 1,770 | 28.43% |
+| Hardcover | 1,715 | 27.55% |
+| Kindle Edition | 346 | 5.56% |
+| Mass Market Paperback | 335 | 5.38% |
+| ebook | 179 | 2.88% |
+| Audio CD | 54 | 0.87% |
+| Audiobook | 15 | 0.24% |
+| Audio Cassette | 9 | 0.14% |
+| Audio | 7 | 0.11% |
+| Audible Audio | 6 | 0.10% |
+| MP3 CD | 3 | 0.05% |
+| Unknown Binding | 3 | 0.05% |
+| Library Binding | 2 | 0.03% |
+| Trade Paperback | 2 | 0.03% |
 
 Top shelves by book coverage:
 
 | shelf | books | pct_books |
 | --- | --- | --- |
-| to read | 16,153 | 99.59% |
-| currently reading | 15,846 | 97.70% |
-| mystery | 15,333 | 94.54% |
-| fiction | 14,814 | 91.34% |
-| kindle | 13,820 | 85.21% |
-| ebook | 12,504 | 77.09% |
-| owned | 12,298 | 75.82% |
-| mystery thriller | 11,839 | 72.99% |
-| thriller | 11,741 | 72.39% |
-| crime | 11,605 | 71.55% |
-| books i own | 11,388 | 70.21% |
-| suspense | 11,115 | 68.53% |
-| library | 11,114 | 68.52% |
-| favorites | 11,043 | 68.09% |
-| ebooks | 10,322 | 63.64% |
-| mysteries | 10,283 | 63.40% |
-| series | 9,963 | 61.43% |
-| mystery suspense | 9,909 | 61.10% |
-| owned books | 9,253 | 57.05% |
-| to buy | 9,163 | 56.50% |
+| to read | 6,211 | 99.78% |
+| currently reading | 6,168 | 99.08% |
+| mystery | 6,141 | 98.65% |
+| fiction | 6,036 | 96.96% |
+| kindle | 5,844 | 93.88% |
+| ebook | 5,533 | 88.88% |
+| mystery thriller | 5,441 | 87.41% |
+| owned | 5,400 | 86.75% |
+| library | 5,256 | 84.43% |
+| crime | 5,203 | 83.58% |
+| favorites | 5,158 | 82.86% |
+| books i own | 5,140 | 82.57% |
+| suspense | 4,988 | 80.13% |
+| thriller | 4,908 | 78.84% |
+| mystery suspense | 4,882 | 78.43% |
+| mysteries | 4,864 | 78.14% |
+| ebooks | 4,826 | 77.53% |
+| audiobook | 4,788 | 76.92% |
+| audio | 4,756 | 76.40% |
+| audiobooks | 4,559 | 73.24% |
 
 Top topical shelves after removing logistics shelves:
 
 | shelf | books | pct_books |
 | --- | --- | --- |
-| mystery | 15,342 | 94.59% |
-| fiction | 14,828 | 91.42% |
-| mystery thriller | 11,846 | 73.04% |
-| thriller | 11,749 | 72.44% |
-| crime | 11,605 | 71.55% |
-| suspense | 11,117 | 68.54% |
-| mysteries | 10,283 | 63.40% |
-| series | 9,972 | 61.48% |
-| mystery suspense | 9,939 | 61.28% |
-| to buy | 9,163 | 56.50% |
-| wish list | 8,923 | 55.02% |
-| adult | 8,668 | 53.44% |
-| audio | 8,327 | 51.34% |
-| contemporary | 8,117 | 50.05% |
-| read in 2017 | 7,984 | 49.23% |
-| e book | 7,250 | 44.70% |
-| thrillers | 7,168 | 44.20% |
-| adult fiction | 7,001 | 43.17% |
-| e books | 6,704 | 41.33% |
-| read 2017 | 6,676 | 41.16% |
+| mystery | 6,142 | 98.67% |
+| fiction | 6,040 | 97.03% |
+| mystery thriller | 5,443 | 87.44% |
+| crime | 5,203 | 83.58% |
+| suspense | 4,988 | 80.13% |
+| thriller | 4,909 | 78.86% |
+| mystery suspense | 4,893 | 78.60% |
+| mysteries | 4,864 | 78.14% |
+| audio | 4,757 | 76.42% |
+| series | 4,508 | 72.42% |
+| adult | 4,448 | 71.45% |
+| to buy | 4,313 | 69.29% |
+| wish list | 3,879 | 62.31% |
+| read in 2017 | 3,831 | 61.54% |
+| adult fiction | 3,805 | 61.12% |
+| contemporary | 3,749 | 60.22% |
+| thrillers | 3,619 | 58.14% |
+| audible | 3,613 | 58.04% |
+| audio books | 3,594 | 57.73% |
+| e book | 3,566 | 57.29% |
 
 ## Interactions
 
 | metric | value |
 | --- | --- |
-| raw_rows | 2,327,295 |
-| raw_unique_users | 28,592 |
-| raw_unique_books | 16,219 |
-| read_and_rated_rows | 552,092 |
-| read_and_rated_pct | 23.72% |
-| valid_unique_users | 25,971 |
-| valid_unique_books | 15,766 |
+| raw_rows | 340,019 |
+| raw_unique_users | 11,731 |
+| raw_unique_books | 6,225 |
+| read_and_rated_rows | 309,454 |
+| read_and_rated_pct | 91.01% |
+| valid_unique_users | 11,526 |
+| valid_unique_books | 6,225 |
 | target_window | 2016-09-01 to 2017-12-31 |
-| target_window_rows | 537,958 |
-| target_window_rows_pct_valid | 97.44% |
-| target_window_unique_users | 25,917 |
-| target_window_unique_books | 15,757 |
-| target_window_time_range | 2016-09-01 to 2017-12-29 |
+| target_window_rows | 299,497 |
+| target_window_rows_pct_valid | 96.78% |
+| target_window_unique_users | 11,515 |
+| target_window_unique_books | 6,225 |
+| target_window_time_range | 2016-09-01 to 2017-12-30 |
 | missing_book_valid_rows | 0 |
-| valid_time_range | 0028-12-30 to 3103-03-15 |
+| valid_time_range | 0028-12-30 to 2017-12-30 |
 
 Raw read/rating cross-tab:
 
 | bucket | rows | pct_rows |
 | --- | --- | --- |
-| False:rating=0 | 1,701,200 | 73.10% |
-| True:rating>0 | 552,092 | 23.72% |
-| True:rating=0 | 74,003 | 3.18% |
+| True:rating>0 | 309,454 | 91.01% |
+| True:rating=0 | 30,565 | 8.99% |
 
 Target-window rating distribution:
 
 | rating | rows | pct_target_window |
 | --- | --- | --- |
-| 4 | 220,370 | 40.96% |
-| 5 | 149,707 | 27.83% |
-| 3 | 130,584 | 24.27% |
-| 2 | 29,473 | 5.48% |
-| 1 | 7,824 | 1.45% |
+| 4 | 123,091 | 41.10% |
+| 5 | 86,447 | 28.86% |
+| 3 | 71,237 | 23.79% |
+| 2 | 14,976 | 5.00% |
+| 1 | 3,746 | 1.25% |
 
 Rating distribution for all read-and-rated rows:
 
 | rating | rows | pct_valid |
 | --- | --- | --- |
-| 4 | 225,965 | 40.93% |
-| 5 | 153,479 | 27.80% |
-| 3 | 134,464 | 24.36% |
-| 2 | 30,166 | 5.46% |
-| 1 | 8,018 | 1.45% |
+| 4 | 126,919 | 41.01% |
+| 5 | 89,211 | 28.83% |
+| 3 | 73,967 | 23.90% |
+| 2 | 15,469 | 5.00% |
+| 1 | 3,888 | 1.26% |
 
 ### User / Item Degree
 
 | distribution | count | min | p50 | p90 | p95 | p99 | max | mean |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| raw_user_degree | 28,592 | 30 | 50 | 141 | 215 | 556.36 | 3,929 | 81.40 |
-| raw_book_degree | 16,219 | 30 | 69 | 278 | 438 | 1,335.48 | 8,938 | 143.49 |
-| valid_user_degree | 25,971 | 1 | 14 | 46 | 64 | 123 | 835 | 21.26 |
-| valid_book_degree | 15,766 | 1 | 15 | 71 | 121 | 326.35 | 3,179 | 35.02 |
-| target_window_user_degree | 25,917 | 1 | 13 | 46 | 62 | 119 | 793 | 20.76 |
-| target_window_book_degree | 15,757 | 1 | 15 | 69 | 118.20 | 320.44 | 3,150 | 34.14 |
+| raw_user_degree | 11,731 | 15 | 22 | 49 | 63 | 113 | 532 | 28.98 |
+| raw_book_degree | 6,225 | 15 | 29 | 109 | 168 | 410 | 1,856 | 54.62 |
+| valid_user_degree | 11,526 | 1 | 21 | 46.50 | 61 | 109 | 532 | 26.85 |
+| valid_book_degree | 6,225 | 6 | 27 | 99 | 154 | 387.04 | 1,721 | 49.71 |
+| target_window_user_degree | 11,515 | 1 | 20 | 45 | 60 | 107 | 501 | 26.01 |
+| target_window_book_degree | 6,225 | 6 | 26 | 96 | 150 | 370.80 | 1,698 | 48.11 |
 
 | metric | value |
 | --- | --- |
-| valid_users_lt_2 | 1,725 |
-| valid_users_lt_5 | 5,482 |
-| valid_users_lt_30 | 19,835 |
-| valid_books_lt_2 | 624 |
-| valid_books_lt_5 | 2,245 |
-| valid_books_lt_30 | 11,582 |
+| valid_users_lt_2 | 84 |
+| valid_users_lt_5 | 230 |
+| valid_users_lt_30 | 8,555 |
+| valid_books_lt_2 | 0 |
+| valid_books_lt_5 | 0 |
+| valid_books_lt_30 | 3,457 |
 | duplicate_user_book_pairs | 0 |
 | duplicate_user_book_extra_rows | 0 |
 
@@ -239,116 +238,116 @@ Rating distribution for all read-and-rated rows:
 
 | month | valid_rows | pct_target_window |
 | --- | --- | --- |
-| 2016-09 | 27,229 | 5.06% |
-| 2016-10 | 33,025 | 6.14% |
-| 2016-11 | 32,348 | 6.01% |
-| 2016-12 | 34,859 | 6.48% |
-| 2017-01 | 48,461 | 9.01% |
-| 2017-02 | 37,439 | 6.96% |
-| 2017-03 | 41,663 | 7.74% |
-| 2017-04 | 40,193 | 7.47% |
-| 2017-05 | 40,966 | 7.62% |
-| 2017-06 | 41,644 | 7.74% |
-| 2017-07 | 44,918 | 8.35% |
-| 2017-08 | 42,629 | 7.92% |
-| 2017-09 | 40,752 | 7.58% |
-| 2017-10 | 31,488 | 5.85% |
-| 2017-11 | 330 | 0.06% |
-| 2017-12 | 14 | 0.00% |
+| 2016-09 | 21,655 | 7.23% |
+| 2016-10 | 25,227 | 8.42% |
+| 2016-11 | 25,213 | 8.42% |
+| 2016-12 | 26,792 | 8.95% |
+| 2017-01 | 36,714 | 12.26% |
+| 2017-02 | 28,276 | 9.44% |
+| 2017-03 | 30,849 | 10.30% |
+| 2017-04 | 29,636 | 9.90% |
+| 2017-05 | 29,432 | 9.83% |
+| 2017-06 | 27,680 | 9.24% |
+| 2017-07 | 7,743 | 2.59% |
+| 2017-08 | 4,568 | 1.53% |
+| 2017-09 | 3,227 | 1.08% |
+| 2017-10 | 2,419 | 0.81% |
+| 2017-11 | 55 | 0.02% |
+| 2017-12 | 11 | 0.00% |
 
 ### Top Valid Interaction Months
 
 | month | valid_rows | pct_valid |
 | --- | --- | --- |
-| 2017-01 | 48,461 | 8.78% |
-| 2017-07 | 44,918 | 8.14% |
-| 2017-08 | 42,629 | 7.72% |
-| 2017-03 | 41,663 | 7.55% |
-| 2017-06 | 41,644 | 7.54% |
-| 2017-05 | 40,966 | 7.42% |
-| 2017-09 | 40,752 | 7.38% |
-| 2017-04 | 40,193 | 7.28% |
-| 2017-02 | 37,439 | 6.78% |
-| 2016-12 | 34,859 | 6.31% |
-| 2016-10 | 33,025 | 5.98% |
-| 2016-11 | 32,348 | 5.86% |
-| 2017-10 | 31,488 | 5.70% |
-| 2016-09 | 27,229 | 4.93% |
-| 2016-01 | 3,226 | 0.58% |
-| 2016-08 | 819 | 0.15% |
-| 2015-01 | 608 | 0.11% |
-| 2016-07 | 438 | 0.08% |
-| 2014-01 | 432 | 0.08% |
-| 2016-06 | 349 | 0.06% |
-| 2017-11 | 330 | 0.06% |
-| 2016-05 | 297 | 0.05% |
-| 2013-01 | 280 | 0.05% |
-| 2012-01 | 274 | 0.05% |
-| 2016-03 | 271 | 0.05% |
-| 2016-04 | 270 | 0.05% |
-| 2011-01 | 253 | 0.05% |
-| 2016-02 | 234 | 0.04% |
-| 2010-01 | 221 | 0.04% |
-| 2005-01 | 170 | 0.03% |
+| 2017-01 | 36,714 | 11.86% |
+| 2017-03 | 30,849 | 9.97% |
+| 2017-04 | 29,636 | 9.58% |
+| 2017-05 | 29,432 | 9.51% |
+| 2017-02 | 28,276 | 9.14% |
+| 2017-06 | 27,680 | 8.94% |
+| 2016-12 | 26,792 | 8.66% |
+| 2016-10 | 25,227 | 8.15% |
+| 2016-11 | 25,213 | 8.15% |
+| 2016-09 | 21,655 | 7.00% |
+| 2017-07 | 7,743 | 2.50% |
+| 2017-08 | 4,568 | 1.48% |
+| 2017-09 | 3,227 | 1.04% |
+| 2016-01 | 2,497 | 0.81% |
+| 2017-10 | 2,419 | 0.78% |
+| 2016-08 | 586 | 0.19% |
+| 2015-01 | 401 | 0.13% |
+| 2016-07 | 320 | 0.10% |
+| 2016-06 | 292 | 0.09% |
+| 2014-01 | 266 | 0.09% |
+| 2016-05 | 231 | 0.07% |
+| 2013-01 | 197 | 0.06% |
+| 2016-03 | 194 | 0.06% |
+| 2016-04 | 194 | 0.06% |
+| 2012-01 | 188 | 0.06% |
+| 2011-01 | 170 | 0.05% |
+| 2016-02 | 160 | 0.05% |
+| 2010-01 | 143 | 0.05% |
+| 2009-01 | 104 | 0.03% |
+| 2008-01 | 93 | 0.03% |
 
 ### Sequence Rows And Split
 
 | metric | value |
 | --- | --- |
-| generated_rows | 526,121 |
-| target_window_generated_rows | 514,491 |
-| target_window_generated_rows_pct | 97.79% |
+| generated_rows | 297,928 |
+| target_window_generated_rows | 289,495 |
+| target_window_generated_rows_pct | 97.17% |
 | history_max_len | 100 |
-| history_capped_rows | 24,058 |
-| history_capped_rows_pct | 4.57% |
-| single_event_users | 1,725 |
+| history_capped_rows | 7,701 |
+| history_capped_rows_pct | 2.58% |
+| single_event_users | 84 |
 | repeated_item_users | 0 |
 | repeated_item_extra_events | 0 |
-| adjacent_same_timestamp_pairs | 13,801 |
+| adjacent_same_timestamp_pairs | 8,790 |
 
 | split | rows | time_range | target_window_rows | target_window_pct | target_users | target_books | new_users_vs_train | new_books_vs_train | history_p50 | history_p95 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| train | 420,896 | 1965-01-01 to 2017-08-07 | 409,289 | 97.24% | 23,081 | 15,108 | 0 | 0 | 14 | 87 |
-| valid | 52,612 | 2017-08-07 to 2017-09-14 | 52,612 | 100.00% | 14,356 | 10,435 | 645 | 357 | 25 | 100 |
-| test | 52,613 | 2017-09-14 to 3103-03-15 | 52,590 | 99.96% | 14,566 | 10,530 | 810 | 503 | 28 | 100 |
+| train | 238,342 | 1964-02-07 to 2017-05-16 | 229,909 | 96.46% | 11,176 | 6,178 | 0 | 0 | 12 | 66 |
+| valid | 29,793 | 2017-05-16 to 2017-06-18 | 29,793 | 100.00% | 7,541 | 5,477 | 183 | 36 | 20 | 85 |
+| test | 29,793 | 2017-06-18 to 2017-12-30 | 29,793 | 100.00% | 7,444 | 5,201 | 168 | 47 | 22 | 93 |
 
 ## Reviews And Text Fallback
 
 | metric | value |
 | --- | --- |
-| review_rows | 118,067 |
-| non_empty_reviews | 118,036 |
-| non_empty_reviews_pct | 99.97% |
-| unique_review_users | 13,275 |
-| unique_review_books | 14,024 |
-| review_books_in_book_metadata | 14,024 |
-| review_books_in_valid_items | 13,989 |
-| review_users_in_valid_interactions | 13,220 |
-| fallback_candidate_reviews | 64,360 |
-| fallback_candidate_books | 11,462 |
-| valid_short_description_books | 910 |
-| valid_empty_description_books | 876 |
-| simulated_description_source | 14,878 |
-| simulated_review_source | 596 |
-| simulated_none_source | 292 |
+| review_rows | 52,885 |
+| non_empty_reviews | 52,877 |
+| non_empty_reviews_pct | 99.98% |
+| unique_review_users | 5,363 |
+| unique_review_books | 5,708 |
+| review_books_in_book_metadata | 5,708 |
+| review_books_in_valid_items | 5,708 |
+| review_users_in_valid_interactions | 5,354 |
+| fallback_candidate_reviews | 28,313 |
+| fallback_candidate_books | 4,748 |
+| valid_short_description_books | 293 |
+| valid_empty_description_books | 280 |
+| simulated_description_source | 5,941 |
+| simulated_review_source | 193 |
+| simulated_none_source | 91 |
 
 | distribution | count | min | p50 | p90 | p95 | p99 | max | mean |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| review_word_count | 118,067 | 0 | 73 | 337 | 452 | 736 | 3,437 | 132.55 |
-| review_votes | 118,067 | 0 | 0 | 5 | 12 | 52 | 432 | 2.80 |
-| review_comments | 118,067 | 0 | 0 | 0 | 2 | 12 | 117 | 0.51 |
-| fallback_reviews_per_book | 11,462 | 1 | 2 | 12 | 19 | 52 | 328 | 5.62 |
+| review_word_count | 52,885 | 0 | 69 | 324 | 437 | 709 | 2,274 | 126.25 |
+| review_votes | 52,885 | 0 | 0 | 5 | 13 | 54 | 432 | 2.87 |
+| review_comments | 52,885 | 0 | 0 | 0 | 2 | 12 | 117 | 0.52 |
+| fallback_reviews_per_book | 4,748 | 1 | 3 | 14 | 20 | 52.53 | 216 | 5.96 |
 
 Review rating distribution:
 
 | rating | reviews | pct_reviews |
 | --- | --- | --- |
-| 4 | 43,749 | 37.05% |
-| 5 | 34,617 | 29.32% |
-| 3 | 25,299 | 21.43% |
-| 2 | 8,351 | 7.07% |
-| 0 | 3,234 | 2.74% |
-| 1 | 2,817 | 2.39% |
+| 4 | 19,947 | 37.72% |
+| 5 | 15,715 | 29.72% |
+| 3 | 11,320 | 21.40% |
+| 2 | 3,645 | 6.89% |
+| 1 | 1,221 | 2.31% |
+| 0 | 1,037 | 1.96% |
 
 ## Interview Notes
 

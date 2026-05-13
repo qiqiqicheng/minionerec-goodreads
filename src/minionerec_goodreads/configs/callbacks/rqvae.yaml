@@ -19,5 +19,16 @@ early_stopping:
   patience: 10
   mode: "min"
 
+full_catalog_checkpoint:
+  _target_: minionerec_goodreads.callbacks.rqvae.RQVAEFullCatalogCheckpointCallback
+  start_epoch: 10
+  dirpath: ${paths.output_dir}/checkpoints
+  filename: "epoch_{epoch:03d}_full_catalog"
+  batch_size: ${data.batch_size}
+  num_workers: ${data.num_workers}
+  pin_memory: ${data.pin_memory}
+  use_sk_infer: False
+  save_weights_only: True
+
 model_summary:
   max_depth: -1

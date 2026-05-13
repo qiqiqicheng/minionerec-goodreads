@@ -23,7 +23,7 @@ __pycache__/
 
 tmp
 
-/checkpoints
+/ckpts
 
 # Distribution / packaging
 .Python

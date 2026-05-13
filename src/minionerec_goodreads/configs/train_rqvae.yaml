@@ -3,19 +3,18 @@
 # specify here default configuration
 # order of defaults determines the order in which configs override each other
 defaults:
-  - _self_
   - data: rqvae
   - model: rqvae
   - callbacks: rqvae
-  - logger: null # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
-  - trainer: default
+  - logger: wandb # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
+  - trainer: gpu
   - paths: default
   - extras: default
   - hydra: default
 
   # experiment configs allow for version control of specific hyperparameters
   # e.g. best hyperparameters for given model and datamodule
-  - experiment: null
+  - experiment: rqvae_4_levels
 
   # config for hyperparameter optimization
   - hparams_search: null
@@ -26,6 +25,16 @@ defaults:
 
   # debugging config (enable through command line, e.g. `python train.py debug=default)
   - debug: null
+  - _self_
+
+trainer:
+  max_epochs: 80
+
+logger:
+  wandb:
+    group: "rqvae"
+    tags: ["train", "rqvae"]
+    # name: ""
 
 # task name, determines output directory path
 task_name: "train_rqvae"

@@ -4,6 +4,7 @@ import ast
 import json
 import os
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -143,7 +144,8 @@ def generate_sid(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     model = hydra.utils.instantiate(cfg.model)
     if embeddings.shape[1] != model.rqvae.in_dim:
         raise ValueError(f"Embedding dim mismatch: {embeddings.shape[1]} != model.rqvae.in_dim {model.rqvae.in_dim}")
-    checkpoint = torch.load(cfg.ckpt_path, map_location="cpu")
+    with torch.serialization.safe_globals([partial, torch.optim.AdamW, torch.optim.lr_scheduler.ReduceLROnPlateau]):
+        checkpoint = torch.load(cfg.ckpt_path, map_location="cpu", weights_only=True)
     state_dict = checkpoint.get("state_dict", checkpoint)
     model.load_state_dict(state_dict)
     model = model.to(device)

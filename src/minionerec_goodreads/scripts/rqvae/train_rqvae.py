@@ -7,7 +7,7 @@ import lightning as L
 import torch
 from lightning import Callback, LightningDataModule, LightningModule, Trainer
 from lightning.pytorch.loggers import Logger
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from minionerec_goodreads.utils import (
     RankedLogger,
@@ -30,6 +30,27 @@ torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("high")
 
 
+def _configure_full_catalog_mode(cfg: DictConfig) -> bool:
+    callbacks_cfg = cfg.get("callbacks")
+    full_catalog_cfg = callbacks_cfg.get("full_catalog_checkpoint") if callbacks_cfg is not None else None
+    start_epoch = full_catalog_cfg.get("start_epoch") if full_catalog_cfg is not None else None
+    if start_epoch is None:
+        return False
+
+    with open_dict(cfg):
+        cfg.data.train_ratio = 1.0
+        cfg.data.valid_ratio = 0.0
+        cfg.data.test_ratio = 0.0
+        cfg.callbacks.model_checkpoint.monitor = "train/total_loss"
+        cfg.callbacks.model_checkpoint.save_on_train_epoch_end = True
+        cfg.callbacks.early_stopping = None
+        cfg.model.scheduler_monitor = "train/total_loss"
+        cfg.trainer.limit_val_batches = 0
+        cfg.trainer.num_sanity_val_steps = 0
+    log.info("Full-catalog checkpoint mode enabled: using all items for train split and skipping validation")
+    return True
+
+
 @task_wrapper
 def train(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     """Trains the model. Can additionally evaluate on a testset, using best weights obtained during
@@ -44,6 +65,8 @@ def train(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     # set seed for random number generators in pytorch, numpy and python.random
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
+
+    _configure_full_catalog_mode(cfg)
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)

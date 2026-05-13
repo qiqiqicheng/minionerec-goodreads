@@ -294,7 +294,7 @@ def preprocess(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
         "num_users": len({row["user_id"] for row in filtered_interactions}),
         **item_stats,
     }
-    with (output_dir / "stats.json").open("w", encoding="utf-8") as file:
+    with (output_dir / "preprocess_stats.json").open("w", encoding="utf-8") as file:
         json.dump(metrics, file, ensure_ascii=False, indent=2)
 
     object_dict = {

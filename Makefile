@@ -1,3 +1,13 @@
+.PHONY: sid
+sid:
+	@uv sync
+	@uv run python -m src.minionerec_goodreads.scripts.rqvae.generate_sid
+
+.PHONY: rqvae
+rqvae:
+	@uv sync
+	@uv run python -m src.minionerec_goodreads.scripts.rqvae.train_rqvae
+
 .PHONY: data
 data: ## Install the virtual environment and install the pre-commit hooks
 	@uv sync

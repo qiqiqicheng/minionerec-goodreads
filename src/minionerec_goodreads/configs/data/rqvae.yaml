@@ -2,8 +2,8 @@ _target_: minionerec_goodreads.dataset.rqvae_dataset.RQVAEDataModule
 embedding_path: ${paths.data_dir}/processed/rqvae/goodreads.emb-bge.npy
 embedding_dim: ${model.rqvae.in_dim}
 batch_size: 256
-num_workers: 0
-pin_memory: False
+num_workers: 12
+pin_memory: True
 train_ratio: 0.9
 valid_ratio: 0.1
 test_ratio: 0.0
