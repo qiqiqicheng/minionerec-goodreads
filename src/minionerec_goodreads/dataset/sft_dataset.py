@@ -23,7 +23,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import PreTrainedTokenizerBase
 
-from minionerec_goodreads.utils.sft import build_item_sid_map, build_tokenizer
+from minionerec_goodreads.utils.sft import SFT_TASK_TO_ID, build_item_sid_map, build_tokenizer
 
 EXPECTED_SPLIT_COLUMNS = [
     "user_id",
@@ -253,6 +253,7 @@ class TokenizedSFTDataset(Dataset):
             "input_ids": input_ids[-self.max_length :],
             "attention_mask": attention_mask[-self.max_length :],  # for attention score compute
             "labels": labels[-self.max_length :],  # for loss compute
+            "task_id": SFT_TASK_TO_ID[sample.task],
         }
 
 
@@ -265,17 +266,20 @@ class SFTBatchCollator:
         input_ids = []
         attention_mask = []
         labels = []
+        task_ids = []
 
         for row in batch:
             pad_len = max_length - len(row["input_ids"])
             input_ids.append(row["input_ids"] + [self.pad_token_id] * pad_len)  # [T]
             attention_mask.append(row["attention_mask"] + [0] * pad_len)  # [T]
             labels.append(row["labels"] + [-100] * pad_len)  # [T]
+            task_ids.append(row["task_id"])
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),  # [B, T]
             "attention_mask": torch.tensor(attention_mask, dtype=torch.long),  # [B, T]
             "labels": torch.tensor(labels, dtype=torch.long),  # [B, T]
+            "task_id": torch.tensor(task_ids, dtype=torch.long),  # [B]
         }
 
 

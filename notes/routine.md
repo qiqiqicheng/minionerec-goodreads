@@ -2,6 +2,8 @@
 完成了 rqvae 的完整训练过程（获得 item_text，生成 item embedding，训练 rqvae，挑选合适的 ckpt，最后 generate_sid），已经将最好的 ckpt 保存在了 ckpts/rqvae 下（参考 https://wandb.ai/qiqiqicheng1301-nonplace/minionerec-goodreads/runs/ktlcy9ir?nw=nwuserqiqiqicheng1301）
 最优先考虑 collision_rate 尽量小的 ckpt，其实训练到后期码本坍塌的现象几乎没有
 
+获得了 data/processed/rqvae/goodreads.index.json 作为 rqvae 阶段的最终成果
+
 根据原始论文中的数据集选择了更小的数据集， 6000 左右的 item 数量，但是总共有 295,730 条 next_token row，交互数量达到 309454，是原论文 3,6259 的十倍
 
 优化了 train_rqvae 的 infra 内容，每次直接跳过 val 选择直接执行 generate_sid 来获得验证的数据，从中选择最佳的 ckpt，效果不错

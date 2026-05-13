@@ -3,10 +3,10 @@
 defaults:
   - _self_
   - data: sft
-  - model: sft_new_token_only
+  - model: sft_full
   - callbacks: sft
-  - logger: null
-  - trainer: default
+  - logger: csv
+  - trainer: gpu
   - paths: default
   - extras: default
   - hydra: default
@@ -23,4 +23,4 @@ test: True
 ckpt_path: null
 
 seed: 728
-optimized_metric: "val/loss"
+optimized_metric: "val/loss_recommendation"
