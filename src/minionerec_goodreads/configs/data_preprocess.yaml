@@ -19,6 +19,7 @@ min_review_rating: 3
 min_review_words: 50
 min_description_words: 20
 history_max_len: 100
+next_token_stride: 6
 shelf_topk: 5
 
 # other configs

@@ -10,6 +10,8 @@ __pycache__/
 # C extensions
 *.so
 
+*.zst
+
 # Ignore the data dir with raw and processed data
 /data
 

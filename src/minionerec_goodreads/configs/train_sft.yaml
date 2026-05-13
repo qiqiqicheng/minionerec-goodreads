@@ -1,9 +1,8 @@
 # @package _global_
 
 defaults:
-  - _self_
   - data: sft
-  - model: sft_full
+  - model: sft_qlora
   - callbacks: sft
   - logger: csv
   - trainer: gpu
@@ -14,12 +13,19 @@ defaults:
 
   - experiment: null
   - debug: null
+  - _self_
+
+trainer:
+  max_epochs: 10
+
+data:
+  batch_size: 2
 
 task_name: "train_sft"
 tags: ["sft", "goodreads"]
 
 train: True
-test: True
+test: False
 ckpt_path: null
 
 seed: 728

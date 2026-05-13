@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from peft import PeftModel
 from transformers import AutoModelForCausalLM
 
 from minionerec_goodreads.metrics.rec import ranking_metrics
@@ -75,7 +76,44 @@ def mean_metrics(metric_rows: list[dict[str, float]]) -> dict[str, float]:
     return {key: value / len(metric_rows) for key, value in sorted(totals.items())}
 
 
+def _load_exported_manifest(model_path: str) -> dict[str, Any] | None:
+    manifest_path = Path(model_path) / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def _load_exported_model(args: argparse.Namespace, manifest: dict[str, Any]) -> tuple[torch.nn.Module, Any, dict[str, list[str]]]:
+    export_dir = Path(args.model_path)
+    tokenizer, sid_index, _ = build_tokenizer(
+        pretrained_model_name_or_path=str(export_dir / "tokenizer"),
+        sid_index_path=export_dir / "goodreads.index.json",
+    )
+    export_type = manifest["export_type"]
+    if export_type == "adapter":
+        base_model_path = args.pretrained_model_name_or_path or manifest["base_model_path"]
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            torch_dtype=resolve_dtype(args.torch_dtype),
+            trust_remote_code=True,
+        )
+        model.resize_token_embeddings(len(tokenizer))
+        model = PeftModel.from_pretrained(model, export_dir / "adapter")
+        return model, tokenizer, sid_index
+    model = AutoModelForCausalLM.from_pretrained(
+        export_dir / "model",
+        torch_dtype=resolve_dtype(args.torch_dtype),
+        trust_remote_code=True,
+    )
+    model.resize_token_embeddings(len(tokenizer))
+    return model, tokenizer, sid_index
+
+
 def load_eval_model(args: argparse.Namespace) -> tuple[torch.nn.Module, Any, dict[str, list[str]]]:
+    exported_manifest = _load_exported_manifest(args.model_path)
+    if exported_manifest is not None and args.checkpoint_path is None:
+        return _load_exported_model(args, exported_manifest)
+
     tokenizer_path = args.pretrained_model_name_or_path or args.model_path
     if args.checkpoint_path is None:
         tokenizer, sid_index, _ = build_tokenizer(

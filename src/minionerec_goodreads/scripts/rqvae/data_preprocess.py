@@ -213,6 +213,7 @@ def build_rows(
     item2id: dict[str, int],
     item_payload: dict[str, dict[str, Any]],
     history_max_len: int,
+    next_token_stride: int,
 ) -> list[list[object]]:
     user_histories = defaultdict(list)
     for row in interactions:
@@ -221,7 +222,7 @@ def build_rows(
     rows = []
     for user_id, records in user_histories.items():
         records.sort(key=lambda row: row["timestamp"])
-        for index in range(1, len(records)):
+        for index in range(next_token_stride, len(records), next_token_stride):
             history = records[max(0, index - history_max_len) : index]
             target = records[index]
             history_book_ids = [row["book_id"] for row in history]
@@ -288,7 +289,7 @@ def preprocess(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
         shelf_topk=cfg.shelf_topk,
     )
     filtered_interactions = [row for row in interactions if row["book_id"] in item2id]
-    rows = build_rows(filtered_interactions, item2id, item_payload, cfg.history_max_len)
+    rows = build_rows(filtered_interactions, item2id, item_payload, cfg.history_max_len, cfg.next_token_stride)
 
     train_end = int(len(rows) * 0.8)
     valid_end = int(len(rows) * 0.9)

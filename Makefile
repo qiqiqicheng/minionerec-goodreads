@@ -1,3 +1,8 @@
+.PHONY: sft
+sft:
+	@uv sync
+	@uv run python -m src.minionerec_goodreads.scripts.sft.train_sft
+
 .PHONY: sid
 sid:
 	@uv sync

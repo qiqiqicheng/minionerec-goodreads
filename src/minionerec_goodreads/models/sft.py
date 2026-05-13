@@ -66,7 +66,7 @@ class SFTModule(L.LightningModule):
         bnb_4bit_use_double_quant: bool = True,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(logger=False, ignore=["optimizer", "scheduler"])
         self._optimizer = optimizer
         self._scheduler = scheduler
 
