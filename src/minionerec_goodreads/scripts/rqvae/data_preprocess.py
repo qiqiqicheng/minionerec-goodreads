@@ -15,6 +15,23 @@ from minionerec_goodreads.utils import RankedLogger, extras, task_wrapper
 
 log = RankedLogger(__name__, rank_zero_only=True)
 TIME_FORMAT = "%a %b %d %H:%M:%S %z %Y"
+LOGISTICS_SHELVES = {
+    "to read",
+    "currently reading",
+    "read",
+    "owned",
+    "own",
+    "books i own",
+    "kindle",
+    "ebook",
+    "ebooks",
+    "audiobook",
+    "audiobooks",
+    "audio",
+    "library",
+    "borrowed",
+    "dnf",
+}
 
 
 def iter_jsonl(path: Path):
@@ -75,7 +92,7 @@ def format_shelves(popular_shelves: list[dict[str, Any]], topk: int) -> list[str
     cleaned = []
     for shelf in popular_shelves:
         name = normalize_text(str(shelf.get("name", "")).replace("-", " ").replace("_", " "))
-        if name:
+        if name and name not in LOGISTICS_SHELVES:
             cleaned.append((int(shelf.get("count", 0)), name))
     cleaned.sort(key=lambda item: (-item[0], item[1]))
     return [name for _, name in cleaned[:topk]]

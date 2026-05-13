@@ -12,7 +12,7 @@ defaults:
 item_path: ${paths.data_dir}/processed/rqvae/goodreads.item.json
 embedding_path: ${paths.data_dir}/processed/rqvae/goodreads.emb-bge.npy
 output_path: ${paths.data_dir}/processed/rqvae/goodreads.index.json
-ckpt_path: ckpts/rqvae/epoch_050_full_catalog.ckpt  # TODO
+ckpt_path: ckpts/rqvae/epoch_055_full_catalog.ckpt  # TODO
 batch_size: 1024
 num_workers: 12
 pin_memory: False
