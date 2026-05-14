@@ -21,6 +21,9 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RLCandidate:
+    """
+    item_id, sid, token_ids, score, rank
+    """
     item_id: str
     sid: str
     token_ids: tuple[int, ...]
@@ -30,6 +33,9 @@ class RLCandidate:
 
 @dataclass(frozen=True)
 class RLRolloutStats:
+    """
+    invalid_count, duplicate_count, completed_count
+    """
     invalid_count: int
     duplicate_count: int
     completed_count: int
@@ -37,6 +43,12 @@ class RLRolloutStats:
 
 @dataclass(frozen=True)
 class ResponseLogProbs:
+    """
+    Args:
+        token_logprobs: [C, T-1] - log probabilities of the generated tokens
+        response_mask: [C, T-1]
+        sequence_logprobs: [C,] - sum of log probabilities for each sequence
+    """
     token_logprobs: torch.Tensor
     response_mask: torch.Tensor
     sequence_logprobs: torch.Tensor
@@ -44,6 +56,9 @@ class ResponseLogProbs:
 
 @dataclass(frozen=True)
 class GRPOLoss:
+    """
+    loss, policy_loss, kl
+    """
     loss: torch.Tensor
     policy_loss: torch.Tensor
     kl: torch.Tensor
@@ -51,6 +66,16 @@ class GRPOLoss:
 
 @dataclass(frozen=True)
 class RolloutBatch:
+    """
+    Args:
+        prompts [C] * str, 
+        token_ids [C] * tuple[int, ...], 
+        advantages [C] * float, 
+        rewards [C] * float, 
+        batch_size B, 
+        candidate_count C, 
+        target_in_beam, short_group_rate, invalid_rate, duplicate_rate
+    """
     prompts: list[str]
     token_ids: list[tuple[int, ...]]
     advantages: torch.Tensor
@@ -72,6 +97,9 @@ def _import_peft_model() -> Any:
 
 
 def compute_rule_rewards(candidates: list[RLCandidate], target_item_id: str) -> list[float]:
+    """
+    0 / 1 list: 0 for neq, 1 for eq
+    """
     return [1.0 if candidate.item_id == target_item_id else 0.0 for candidate in candidates]
 
 
@@ -94,6 +122,9 @@ def compute_rewards(
     target_item_id: str,
     rank_reward_lambda: float,
 ) -> torch.Tensor:
+    """
+    [Nb,] reward = rule_reward + rank_reward_lambda * rank_reward
+    """
     rule_rewards = compute_rule_rewards(candidates, target_item_id)
     rank_rewards = compute_rank_rewards(candidates, target_item_id)
     rewards = [rule + rank_reward_lambda * rank for rule, rank in zip(rule_rewards, rank_rewards)]
@@ -163,16 +194,22 @@ def gather_response_logprobs(
     input_ids: torch.Tensor,
     response_mask: torch.Tensor,
 ) -> ResponseLogProbs:
-    shifted_logits = logits[:, :-1, :].float().contiguous()
-    shifted_labels = input_ids[:, 1:].contiguous()
-    shifted_mask = response_mask[:, 1:].contiguous()
-    log_probs = F.log_softmax(shifted_logits, dim=-1)
-    token_logprobs = log_probs.gather(dim=-1, index=shifted_labels.unsqueeze(-1)).squeeze(-1)
-    token_logprobs = token_logprobs * shifted_mask
+    """
+    Args:
+        logits: [C, T, V] - logits for each token
+        input_ids: [C, T] - input token IDs
+        response_mask: [C, T] - mask for response tokens
+    """
+    shifted_logits = logits[:, :-1, :].float().contiguous()  # [C, T-1, V]
+    shifted_labels = input_ids[:, 1:].contiguous()  # [C, T-1]
+    shifted_mask = response_mask[:, 1:].contiguous()  # [C, T-1]
+    log_probs = F.log_softmax(shifted_logits, dim=-1)  # [C, T-1, V]
+    token_logprobs = log_probs.gather(dim=-1, index=shifted_labels.unsqueeze(-1)).squeeze(-1)  # [C, T-1] select the logprobs of the actual generated tokens
+    token_logprobs = token_logprobs * shifted_mask  # [C, T-1]
     return ResponseLogProbs(
-        token_logprobs=token_logprobs,
-        response_mask=shifted_mask,
-        sequence_logprobs=token_logprobs.sum(dim=1),
+        token_logprobs=token_logprobs,  # [C, T-1]
+        response_mask=shifted_mask,  # [C, T-1]
+        sequence_logprobs=token_logprobs.sum(dim=1),  # [C,] sum logprobs of generated tokens for each sequence
     )
 
 
@@ -185,15 +222,23 @@ def compute_grpo_loss(
     clip_epsilon: float,
     kl_beta: float,
 ) -> GRPOLoss:
+    """
+    Args:
+        current_logprobs: [C, T-1]
+        old_logprobs: [C, T-1]
+        reference_logprobs: [C, T-1]
+        response_mask: [C, T-1]
+        advantages: [C,]
+    """
     token_count = response_mask.sum().clamp_min(1.0)
-    token_advantages = advantages[:, None]
-    ratio = torch.exp(current_logprobs - old_logprobs)
-    unclipped = ratio * token_advantages
-    clipped = ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon) * token_advantages
-    policy_loss = -(torch.minimum(unclipped, clipped) * response_mask).sum() / token_count
-    ref_actor_delta = reference_logprobs - current_logprobs
-    kl = ((torch.exp(ref_actor_delta) - ref_actor_delta - 1.0) * response_mask).sum() / token_count
-    loss = policy_loss + kl_beta * kl
+    token_advantages = advantages[:, None]  # [C, 1]
+    ratio = torch.exp(current_logprobs - old_logprobs)  # [C, T-1]
+    unclipped = ratio * token_advantages  # [C, T-1]
+    clipped = ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon) * token_advantages  # [C, T-1]
+    policy_loss = -(torch.minimum(unclipped, clipped) * response_mask).sum() / token_count  # scalar
+    ref_actor_delta = reference_logprobs - current_logprobs  # [C, T-1]
+    kl = ((torch.exp(ref_actor_delta) - ref_actor_delta - 1.0) * response_mask).sum() / token_count  # scalar
+    loss = policy_loss + kl_beta * kl  # scalar
     return GRPOLoss(loss=loss, policy_loss=policy_loss, kl=kl)
 
 
@@ -205,6 +250,9 @@ def constrained_sid_beam_rollout(  # noqa: C901
     num_generations: int,
     max_sid_length: int,
 ) -> tuple[list[RLCandidate], RLRolloutStats]:
+    """ 
+    RLCandidate List, RLRolloutStats
+    """
     if num_generations <= 0:
         raise ValueError(f"num_generations must be positive, got {num_generations}")
     device = next(model.parameters()).device
@@ -229,7 +277,7 @@ def constrained_sid_beam_rollout(  # noqa: C901
                 continue
             if prefix:
                 prefix_tensor = torch.tensor([prefix], dtype=torch.long, device=device)
-                input_ids = torch.cat([prompt_ids, prefix_tensor], dim=1)
+                input_ids = torch.cat([prompt_ids, prefix_tensor], dim=1)  # prompt + prefix
                 full_attention_mask = torch.cat(
                     [attention_mask, torch.ones((1, len(prefix)), dtype=torch.long, device=device)],
                     dim=1,
@@ -237,20 +285,20 @@ def constrained_sid_beam_rollout(  # noqa: C901
             else:
                 input_ids = prompt_ids
                 full_attention_mask = attention_mask
-            logits = model(input_ids=input_ids, attention_mask=full_attention_mask).logits[0, -1]
-            log_probs = torch.log_softmax(logits[next_token_ids], dim=-1)
+            logits = model(input_ids=input_ids, attention_mask=full_attention_mask).logits[0, -1]  # [V,]
+            log_probs = torch.log_softmax(logits[next_token_ids], dim=-1)  # [Nb,]
             k = min(num_generations, len(next_token_ids))
             top_scores, top_indices = torch.topk(log_probs, k=k)
             for top_score, top_index in zip(top_scores.tolist(), top_indices.tolist()):
                 token_id = next_token_ids[top_index]
                 next_prefix = (*prefix, token_id)
-                next_score = score + top_score
+                next_score = score + top_score  # using log_softmax scores, so we add
                 item_id = trie.item_id(next_prefix)
                 if item_id is not None:
                     completed.append((next_prefix, next_score))
                 if trie.next_token_ids(next_prefix):
                     beam_candidates.append((next_prefix, next_score))
-        beams = sorted(beam_candidates, key=lambda row: row[1], reverse=True)[:num_generations]
+        beams = sorted(beam_candidates, key=lambda row: row[1], reverse=True)[:num_generations]  # beams_size always <= num_generations
         if len(completed) >= num_generations and not beams:
             break
 
@@ -262,7 +310,7 @@ def constrained_sid_beam_rollout(  # noqa: C901
         if item_id is None:
             invalid_count += 1
             continue
-        if item_id in seen_item_ids:
+        if item_id in seen_item_ids:  # deduplication based oon item id
             duplicate_count += 1
             continue
         seen_item_ids.add(item_id)
@@ -315,11 +363,14 @@ class RLModule(L.LightningModule):
         self.trie = SIDTrie(self.tokenizer, self.sid_index)
         self.max_sid_length = max_sid_length or max(len(tokens) for tokens in self.sid_index.values())
 
-        self.model = self._build_adapter_model()
+        self.model = self._build_adapter_model()  # adapter: actor* and reference
         self._validate_trainable_parameters()
         self._log_trainable_parameters()
 
     def _load_tokenizer_and_sid_index(self) -> tuple[PreTrainedTokenizerBase, dict[str, list[str]], int]:
+        """ 
+        tokenizer, sid_index, original_vocab_size
+        """
         export_tokenizer_path = self.sft_export_dir / "tokenizer"
         export_sid_index_path = self.sft_export_dir / "goodreads.index.json"
         manifest_path = self.sft_export_dir / "manifest.json"
@@ -427,16 +478,16 @@ class RLModule(L.LightningModule):
         duplicate_count = 0
         completed_count = 0
 
-        prompts = batch["prompts"]
-        target_item_ids = batch["target_item_ids"]
+        prompts = batch["prompts"]  # list
+        target_item_ids = batch["target_item_ids"]  # list
         for prompt, target_item_id in zip(prompts, target_item_ids):
             candidates, stats = self._rollout_one(prompt)
             if not candidates:
                 raise ValueError("Constrained beam rollout produced no valid candidates")
-            rewards = compute_rewards(candidates, target_item_id, self.hparams.rank_reward_lambda)
-            advantages = normalize_group_advantages(rewards)
-            flat_prompts.extend([prompt] * len(candidates))
-            flat_token_ids.extend([candidate.token_ids for candidate in candidates])
+            rewards = compute_rewards(candidates, target_item_id, self.hparams.rank_reward_lambda)  # [Nb,]
+            advantages = normalize_group_advantages(rewards)  # [Nb,]
+            flat_prompts.extend([prompt] * len(candidates))  # [Nb] * str
+            flat_token_ids.extend([candidate.token_ids for candidate in candidates])  # [Nb] * tuple[int, ...]
             advantages_by_group.append(advantages)
             rewards_by_group.append(rewards)
             target_hits += int(any(candidate.item_id == target_item_id for candidate in candidates))
@@ -450,13 +501,13 @@ class RLModule(L.LightningModule):
         if candidate_count == 0:
             raise ValueError("RL rollout batch has no candidates")
         normalizer = max(completed_count, candidate_count)
-        return RolloutBatch(
-            prompts=flat_prompts,
-            token_ids=flat_token_ids,
-            advantages=torch.cat(advantages_by_group),
-            rewards=torch.cat(rewards_by_group),
-            batch_size=batch_size,
-            candidate_count=candidate_count,
+        return RolloutBatch(  # C: C <= B*Nb
+            prompts=flat_prompts,  # [C] * str
+            token_ids=flat_token_ids,  # [C] * tuple[int, ...], candidate token ids
+            advantages=torch.cat(advantages_by_group),  # [C,]
+            rewards=torch.cat(rewards_by_group),  # [C,]
+            batch_size=batch_size,  # B
+            candidate_count=candidate_count,  # C
             target_in_beam=target_hits / batch_size,
             short_group_rate=short_groups / batch_size,
             invalid_rate=invalid_count / max(normalizer, 1),
@@ -488,24 +539,34 @@ class RLModule(L.LightningModule):
         context = nullcontext() if grad else torch.no_grad()
         with context:
             outputs = self.model(input_ids=encoded["input_ids"], attention_mask=encoded["attention_mask"])
-            logprobs = gather_response_logprobs(outputs.logits, encoded["input_ids"], encoded["response_mask"])
+            logprobs: ResponseLogProbs = gather_response_logprobs(outputs.logits, encoded["input_ids"], encoded["response_mask"])
         if was_training:
             self.model.train()
         return logprobs
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         _ = batch_idx
-        rollout = self._build_rollout_batch(batch)
-        advantages = rollout.advantages.to(self.device)
+        rollout: RolloutBatch = self._build_rollout_batch(batch)
+        advantages = rollout.advantages.to(self.device)  # [C,]
         with torch.no_grad():
-            old_logprobs = self._compute_adapter_logprobs(rollout.prompts, rollout.token_ids, adapter_name="actor", grad=False)
-            reference_logprobs = self._compute_adapter_logprobs(
+            old_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
+                rollout.prompts, 
+                rollout.token_ids, 
+                adapter_name="actor", 
+                grad=False
+            )
+            reference_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
                 rollout.prompts,
                 rollout.token_ids,
                 adapter_name="reference",
                 grad=False,
             )
-        current_logprobs = self._compute_adapter_logprobs(rollout.prompts, rollout.token_ids, adapter_name="actor", grad=True)
+        current_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
+            rollout.prompts, 
+            rollout.token_ids, 
+            adapter_name="actor", 
+            grad=True
+        )
         loss = compute_grpo_loss(
             current_logprobs=current_logprobs.token_logprobs,
             old_logprobs=old_logprobs.token_logprobs.detach(),

@@ -20,6 +20,9 @@ class SIDTokenizerCheckResult:
 
 
 def load_sid_index(path: str | Path) -> dict[str, list[str]]:
+    """ 
+    payload: {item_id: [sid_token1, sid_token2, ...], ...}
+    """
     json_path = Path(path)
     with json_path.open("r", encoding="utf-8") as file:
         payload = json.load(file)

@@ -336,6 +336,7 @@ class SFTDataModule(L.LightningDataModule):
         self.data_train: TokenizedSFTDataset | None = None
         self.data_valid: TokenizedSFTDataset | None = None
         self.data_test: TokenizedSFTDataset | None = None
+        self.valid_rows: list[dict[str, str]] | None = None
 
     def prepare_data(self) -> None:
         for path in [self.train_path, self.valid_path, self.test_path, self.item_path, self.sid_index_path]:
@@ -350,6 +351,7 @@ class SFTDataModule(L.LightningDataModule):
         train_rows = load_split_csv(self.train_path)
         valid_rows = load_split_csv(self.valid_path)
         test_rows = load_split_csv(self.test_path)
+        self.valid_rows = valid_rows
         item_payload = load_item_payload(self.item_path)
         tokenizer, sid_index, _ = build_tokenizer(
             pretrained_model_name_or_path=self.pretrained_model_name_or_path,

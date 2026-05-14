@@ -19,5 +19,13 @@ early_stopping:
   patience: 5
   mode: "min"
 
+recommendation_validation:
+  _target_: minionerec_goodreads.callbacks.sft.SFTRecommendationValidationCallback
+  num_samples: 256
+  num_beams: 10
+  ks: [3, 5, 10]
+  task: "seq_sid_to_sid"
+  seed: ${seed}
+
 model_summary:
   max_depth: -1

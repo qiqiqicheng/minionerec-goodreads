@@ -28,12 +28,15 @@ defaults:
   - _self_
 
 trainer:
-  max_epochs: 80
+  max_epochs: 500
+
+data:
+  batch_size: 2048
 
 logger:
   wandb:
     group: "rqvae"
-    tags: ["train", "rqvae"]
+    tags: ["train", "rqvae", "large epochs"]
     # name: ""
 
 # task name, determines output directory path
