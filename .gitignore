@@ -12,6 +12,8 @@ __pycache__/
 
 *.zst
 
+*.whl
+
 # Ignore the data dir with raw and processed data
 /data
 

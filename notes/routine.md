@@ -1,3 +1,28 @@
+## 0514
+在 autodl 上完成了第一次的 sft 训练，仅训练了 4 epoch，从 evaluate 结果看还是很差，本阶段的结果见 `logs/train_sft/runs/2026-05-13_21-53-27` 和 
+
+export:
+```bash
+uv run src/minionerec_goodreads/scripts/sft/export_sft.py \
+    --checkpoint-path logs/train_sft/runs/2026-05-13_21-53-27/checkpoints/epoch_003.ckpt \
+    --output-dir data/ckpts/sft \
+    --sid-index-path data/processed/rqvae/goodreads.index.json \ 
+    --item-path data/processed/rqvae/goodreads.item.json
+```
+
+evaluate:
+```bash
+CUDA_VISIBLE_DEVICES=3 uv run src/minionerec_goodreads/scripts/sft/eval_sft.py 
+    --model-path data/ckpts/sft \
+    --split-path data/processed/rqvae/test.csv \
+    --max-samples 256
+```
+
+感觉还是 epoch 数太少了
+
+暂时先转向 RLHF。。。
+下次项目一定不能用这种框架了，写不了一点。。。
+
 ## 0513
 完成了 rqvae 的完整训练过程（获得 item_text，生成 item embedding，训练 rqvae，挑选合适的 ckpt，最后 generate_sid），已经将最好的 ckpt 保存在了 ckpts/rqvae 下（参考 https://wandb.ai/qiqiqicheng1301-nonplace/minionerec-goodreads/runs/ktlcy9ir?nw=nwuserqiqiqicheng1301）
 最优先考虑 collision_rate 尽量小的 ckpt，其实训练到后期码本坍塌的现象几乎没有

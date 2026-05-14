@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export an SFT Lightning checkpoint for reproducible inference/eval.")
     parser.add_argument("--checkpoint-path", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--pretrained-model-name-or-path", required=True)
+    parser.add_argument("--pretrained-model-name-or-path", default="/mnt/disk2/chengqi/models/llm/Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--sid-index-path", required=True, type=Path)
     parser.add_argument("--item-path", required=True, type=Path)
     parser.add_argument("--resolved-config-path", default=None, type=Path)

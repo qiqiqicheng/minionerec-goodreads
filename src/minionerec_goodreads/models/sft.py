@@ -246,6 +246,9 @@ class SFTModule(L.LightningModule):
         if not torch.isfinite(loss):
             raise ValueError(f"Non-finite {stage} loss: {loss}")
         batch_size = batch["input_ids"].shape[0]
+        log_step = stage == "train"
+        if log_step:
+            self.log(f"{stage}/loss_step", loss, prog_bar=True, on_step=True, on_epoch=False, batch_size=batch_size)
         self.log(f"{stage}/loss", loss, prog_bar=(stage != "test"), on_step=False, on_epoch=True, batch_size=batch_size)
         if "task_id" in batch:
             with torch.no_grad():
@@ -253,6 +256,15 @@ class SFTModule(L.LightningModule):
             recommendation_loss_sum = None
             recommendation_batch_size = 0
             for task_name, (task_loss, task_batch_size) in task_losses.items():
+                if log_step:
+                    self.log(
+                        f"{stage}/loss_{task_name}_step",
+                        task_loss,
+                        prog_bar=False,
+                        on_step=True,
+                        on_epoch=False,
+                        batch_size=task_batch_size,
+                    )
                 self.log(
                     f"{stage}/loss_{task_name}",
                     task_loss,
@@ -266,9 +278,19 @@ class SFTModule(L.LightningModule):
                     recommendation_loss_sum = weighted_loss if recommendation_loss_sum is None else recommendation_loss_sum + weighted_loss
                     recommendation_batch_size += task_batch_size
             if recommendation_loss_sum is not None:
+                recommendation_loss = recommendation_loss_sum / recommendation_batch_size
+                if log_step:
+                    self.log(
+                        f"{stage}/loss_recommendation_step",
+                        recommendation_loss,
+                        prog_bar=True,
+                        on_step=True,
+                        on_epoch=False,
+                        batch_size=recommendation_batch_size,
+                    )
                 self.log(
                     f"{stage}/loss_recommendation",
-                    recommendation_loss_sum / recommendation_batch_size,
+                    recommendation_loss,
                     prog_bar=(stage != "test"),
                     on_step=False,
                     on_epoch=True,

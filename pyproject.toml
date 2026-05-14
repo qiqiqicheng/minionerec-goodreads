@@ -8,7 +8,7 @@ keywords = ['python']
 requires-python = ">=3.9,<=3.11"
 dependencies = [
     # --------- pytorch --------- #
-    "torch>=2.6.0",
+    "torch>=2.6.0,<2.9.0",
     "torchvision>=0.20.0",
     "lightning>=2.4.0",
     "torchmetrics>=1.0.0",

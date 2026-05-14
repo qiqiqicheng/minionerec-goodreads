@@ -8,6 +8,9 @@ from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from typing import Any
+import os
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
 import torch
 from peft import PeftModel
