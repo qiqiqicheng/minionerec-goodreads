@@ -1,0 +1,39 @@
+# @package _global_
+
+defaults:
+  - data: rl
+  - model: rl_lora
+  - callbacks: rl
+  - logger: csv
+  - trainer: gpu
+  - paths: default
+  - extras: default
+  - hydra: default
+  - optional local: default
+
+  - experiment: null
+  - debug: null
+  - _self_
+
+trainer:
+  max_epochs: 1
+  log_every_n_steps: 1
+  accumulate_grad_batches: 8
+
+data:
+  batch_size: 1
+  max_train_samples: 256
+  max_valid_samples: 128
+
+model:
+  num_generations: 4
+
+task_name: "train_rl"
+tags: ["rl", "grpo", "goodreads"]
+
+train: True
+test: False
+ckpt_path: null
+
+seed: 728
+optimized_metric: "val/rule_hit_at_g"

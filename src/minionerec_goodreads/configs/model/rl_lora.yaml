@@ -1,0 +1,27 @@
+_target_: minionerec_goodreads.models.rl.RLModule
+
+pretrained_model_name_or_path: ${data.pretrained_model_name_or_path}
+sft_export_dir: ${data.sft_export_dir}
+sid_index_path: ${data.sid_index_path}
+max_length: 1024
+num_generations: 4
+rank_reward_lambda: 0.1
+kl_beta: 0.02
+clip_epsilon: 0.2
+warmup_ratio: 0.03
+gradient_checkpointing: True
+torch_dtype: "bfloat16"
+max_sid_length: null
+attn_implementation: "flash_attention_2"
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 5e-5
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+scheduler:
+  _target_: transformers.get_cosine_schedule_with_warmup
+  _partial_: true

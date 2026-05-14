@@ -1,0 +1,15 @@
+_target_: minionerec_goodreads.dataset.rl_dataset.RLDataModule
+train_path: ${paths.data_dir}/processed/rqvae/train.csv
+valid_path: ${paths.data_dir}/processed/rqvae/valid.csv
+test_path: ${paths.data_dir}/processed/rqvae/test.csv
+sid_index_path: ${paths.data_dir}/processed/rqvae/goodreads.index.json
+pretrained_model_name_or_path: /mnt/disk2/chengqi/models/llm/Qwen/Qwen2.5-3B-Instruct
+sft_export_dir: ${paths.data_dir}/ckpts/sft
+batch_size: 1
+num_workers: 4
+pin_memory: True
+persistent_workers: False
+max_train_samples: 256
+max_valid_samples: 128
+max_test_samples: null
+seed: ${seed}
