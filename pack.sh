@@ -64,3 +64,7 @@ else
     tar -czf "${FALLBACK_FILE}" data/
     echo "Done! Output: ${FALLBACK_FILE}"
 fi
+
+
+# tar -I "zstd -T0" -cf notes.tar.zst notes/
+# tar -I "zstd -T0" -cf processed.tar.zst data/processed/rqvae

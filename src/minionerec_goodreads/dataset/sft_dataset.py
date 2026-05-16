@@ -24,6 +24,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import PreTrainedTokenizerBase
 
 from minionerec_goodreads.utils.sft import SFT_TASK_TO_ID, build_item_sid_map, build_tokenizer
+from minionerec_goodreads.utils.sft_generation import format_sft_prompt
 
 EXPECTED_SPLIT_COLUMNS = [
     "user_id",
@@ -230,13 +231,7 @@ class TokenizedSFTDataset(Dataset):
                 - labels (with prompt tokens masked as -100)
         """
         sample = self.samples[index]
-        prompt_text = (
-            "Below is an instruction that describes a task, paired with an input that provides further context. "
-            "Write a response that appropriately completes the request.\n\n"
-            f"### Instruction:\n{sample.instruction}\n\n"
-            f"### User Input:\n{sample.user_input}\n\n"
-            "### Response:\n"
-        )
+        prompt_text = format_sft_prompt(sample.instruction, sample.user_input)
         prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)  # [P]
         response_ids = self.tokenizer.encode(sample.response, add_special_tokens=False)  # [R]
 

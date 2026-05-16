@@ -21,7 +21,7 @@ class GenerationStats:
     duplicate_count: int
 
 
-def _format_sft_prompt(instruction: str, user_input: str) -> str:
+def format_sft_prompt(instruction: str, user_input: str) -> str:
     return (
         "Below is an instruction that describes a task, paired with an input that provides further context. "
         "Write a response that appropriately completes the request.\n\n"
@@ -40,7 +40,7 @@ def format_seq_sid_prompt(history_sids: list[str]) -> str:
         f"The user has interacted with books {history_text} in chronological order. "
         "Predict the semantic ID of the next book."
     )
-    return _format_sft_prompt(instruction=instruction, user_input=user_input)
+    return format_sft_prompt(instruction=instruction, user_input=user_input)
 
 
 def format_title_history_prompt(history_titles: list[str]) -> str:
@@ -52,7 +52,7 @@ def format_title_history_prompt(history_titles: list[str]) -> str:
         "The user has interacted with the following book titles in chronological order: "
         f"{title_text}. Predict the semantic ID of the next book."
     )
-    return _format_sft_prompt(instruction=instruction, user_input=user_input)
+    return format_sft_prompt(instruction=instruction, user_input=user_input)
 
 
 def constrained_sid_beam_search(  # noqa: C901
@@ -93,8 +93,10 @@ def constrained_sid_beam_search(  # noqa: C901
                 dim=1,
             )
             with torch.inference_mode():
-                logits = model(input_ids=input_ids, attention_mask=full_attention_mask).logits[0, -1]
-            log_probs = torch.log_softmax(logits[next_token_ids], dim=-1)
+                next_token_logits = model(input_ids=input_ids, attention_mask=full_attention_mask, use_cache=False).logits[
+                    0, -1, next_token_ids
+                ]
+            log_probs = torch.log_softmax(next_token_logits, dim=-1)
             k = min(num_beams, len(next_token_ids))
             top_scores, top_indices = torch.topk(log_probs, k=k)
             for top_score, top_index in zip(top_scores.tolist(), top_indices.tolist()):

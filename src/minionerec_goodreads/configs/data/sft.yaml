@@ -4,7 +4,7 @@ valid_path: ${paths.data_dir}/processed/rqvae/valid.csv
 test_path: ${paths.data_dir}/processed/rqvae/test.csv
 item_path: ${paths.data_dir}/processed/rqvae/goodreads.item.json
 sid_index_path: ${paths.data_dir}/processed/rqvae/goodreads.index.json
-pretrained_model_name_or_path: /mnt/disk2/chengqi/models/llm/Qwen/Qwen2.5-3B-Instruct  # TODO: change the path
+pretrained_model_name_or_path: /mnt/disk2/chengqi/models/llm/Qwen/Qwen2.5-3B-Instruct  # TODO
 # pretrained_model_name_or_path: /mnt/disk2/chengqi/models/llm/Qwen/Qwen2.5-1.5B-Instruct
 max_length: 1024
 batch_size: 8

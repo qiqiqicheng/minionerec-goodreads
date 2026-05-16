@@ -4,7 +4,7 @@ defaults:
   - data: sft
   - model: sft_qlora
   - callbacks: sft
-  - logger: csv
+  - logger: csv # TODO
   - trainer: gpu
   - paths: default
   - extras: default
@@ -16,12 +16,14 @@ defaults:
   - _self_
 
 trainer:
-  max_epochs: 5
+  max_epochs: 12
   log_every_n_steps: 10
 
 data:
   batch_size: 4
-  max_length: 512
+  max_length: 1744 # TODO
+  max_train_samples: null # debug
+  max_valid_samples: null # debug
 
 task_name: "train_sft"
 tags: ["sft", "goodreads"]
@@ -31,4 +33,4 @@ test: False
 ckpt_path: null
 
 seed: 728
-optimized_metric: "val/loss_recommendation"
+optimized_metric: "val/rec_MRR@10" # TODO

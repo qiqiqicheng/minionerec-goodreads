@@ -56,6 +56,7 @@ class SFTModule(L.LightningModule):
         torch_dtype: str,
         optimizer: Callable,
         scheduler: Callable | None,
+        attn_implementation: str | None = None,
         lora_r: int = 16,
         lora_alpha: int = 32,
         lora_dropout: float = 0.05,
@@ -86,11 +87,13 @@ class SFTModule(L.LightningModule):
         self._log_trainable_parameters()
 
     def _build_dense_model(self) -> torch.nn.Module:
-        model = AutoModelForCausalLM.from_pretrained(
-            self.hparams.pretrained_model_name_or_path,
-            torch_dtype=_resolve_dtype(self.hparams.torch_dtype),
-            trust_remote_code=True,
-        )
+        model_kwargs: dict[str, Any] = {
+            "torch_dtype": _resolve_dtype(self.hparams.torch_dtype),
+            "trust_remote_code": True,
+        }
+        if self.hparams.attn_implementation is not None:
+            model_kwargs["attn_implementation"] = self.hparams.attn_implementation
+        model = AutoModelForCausalLM.from_pretrained(self.hparams.pretrained_model_name_or_path, **model_kwargs)
         model.resize_token_embeddings(len(self.tokenizer))
         if self.hparams.gradient_checkpointing:
             model.gradient_checkpointing_enable()
@@ -102,10 +105,12 @@ class SFTModule(L.LightningModule):
     def _build_lora_model(self) -> torch.nn.Module:
         LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training = _import_peft()
 
-        model_kwargs = {
+        model_kwargs: dict[str, Any] = {
             "torch_dtype": _resolve_dtype(self.hparams.torch_dtype),
             "trust_remote_code": True,
         }
+        if self.hparams.attn_implementation is not None:
+            model_kwargs["attn_implementation"] = self.hparams.attn_implementation
         if self.hparams.load_in_4bit:
             if not torch.cuda.is_available():
                 raise RuntimeError("4-bit LoRA loading requires CUDA. Set load_in_4bit=False or use full_finetune/new_token_only.")

@@ -4,12 +4,12 @@ valid_path: ${paths.data_dir}/processed/rqvae/valid.csv
 test_path: ${paths.data_dir}/processed/rqvae/test.csv
 sid_index_path: ${paths.data_dir}/processed/rqvae/goodreads.index.json
 pretrained_model_name_or_path: /mnt/disk2/chengqi/models/llm/Qwen/Qwen2.5-3B-Instruct
-sft_export_dir: ${paths.data_dir}/ckpts/sft
+sft_export_dir: ${paths.data_dir}/ckpts/sft/epoch_4
 batch_size: 1
-num_workers: 4
+num_workers: 12
 pin_memory: True
 persistent_workers: False
-max_train_samples: 256
-max_valid_samples: 128
+max_train_samples: null
+max_valid_samples: null
 max_test_samples: null
 seed: ${seed}

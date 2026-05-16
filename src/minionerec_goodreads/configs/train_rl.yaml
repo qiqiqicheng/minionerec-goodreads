@@ -21,9 +21,10 @@ trainer:
   accumulate_grad_batches: 8
 
 data:
+  sft_export_dir: ${paths.data_dir}/ckpts/sft/epoch_4 # TODO
   batch_size: 1
-  max_train_samples: 256
-  max_valid_samples: 128
+  max_train_samples: null # debug
+  max_valid_samples: null # debug
 
 model:
   num_generations: 4

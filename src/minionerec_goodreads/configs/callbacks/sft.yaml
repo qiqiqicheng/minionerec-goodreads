@@ -9,15 +9,15 @@ defaults:
 model_checkpoint:
   dirpath: ${paths.output_dir}/checkpoints
   filename: "epoch_{epoch:03d}"
-  monitor: "val/loss_recommendation"
-  mode: "min"
+  monitor: "val/rec_MRR@10"  # TODO
+  mode: "max"  # TODO
   save_last: True
-  auto_insert_metric_name: False
+  auto_insert_metric_name: True
 
 early_stopping:
-  monitor: "val/loss_recommendation"
-  patience: 5
-  mode: "min"
+  monitor: "val/rec_MRR@10"  # TODO
+  patience: 2  # TODO
+  mode: "max"  # TODO
 
 recommendation_validation:
   _target_: minionerec_goodreads.callbacks.sft.SFTRecommendationValidationCallback
