@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,8 +14,10 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
+from minionerec_goodreads.dataset.sft_dataset import load_split_csv
 from minionerec_goodreads.models.sft import _resolve_dtype
 from minionerec_goodreads.utils.sft import build_tokenizer, load_sid_index
+from minionerec_goodreads.utils.sft_generation import forward_last_token_logits
 from minionerec_goodreads.utils.sid_trie import SIDTrie
 
 log = logging.getLogger(__name__)
@@ -24,6 +28,7 @@ class RLCandidate:
     """
     item_id, sid, token_ids, score, rank
     """
+
     item_id: str
     sid: str
     token_ids: tuple[int, ...]
@@ -36,6 +41,7 @@ class RLRolloutStats:
     """
     invalid_count, duplicate_count, completed_count
     """
+
     invalid_count: int
     duplicate_count: int
     completed_count: int
@@ -49,6 +55,7 @@ class ResponseLogProbs:
         response_mask: [C, T-1]
         sequence_logprobs: [C,] - sum of log probabilities for each sequence
     """
+
     token_logprobs: torch.Tensor
     response_mask: torch.Tensor
     sequence_logprobs: torch.Tensor
@@ -57,29 +64,51 @@ class ResponseLogProbs:
 @dataclass(frozen=True)
 class GRPOLoss:
     """
-    loss, policy_loss, kl
+    loss, policy_loss, kl, kl_seq_mean, clip_fraction, ref_actor_logprob_delta_mean
     """
+
     loss: torch.Tensor
     policy_loss: torch.Tensor
     kl: torch.Tensor
+    kl_seq_mean: torch.Tensor
+    clip_fraction: torch.Tensor
+    ref_actor_logprob_delta_mean: torch.Tensor
+
+
+@dataclass(frozen=True)
+class RewardBreakdown:
+    """
+    total/exact/rank/partial/long_tail: [Nb]
+    """
+
+    total: torch.Tensor
+    exact: torch.Tensor
+    rank: torch.Tensor
+    partial: torch.Tensor
+    long_tail: torch.Tensor
 
 
 @dataclass(frozen=True)
 class RolloutBatch:
     """
     Args:
-        prompts [C] * str, 
-        token_ids [C] * tuple[int, ...], 
-        advantages [C] * float, 
-        rewards [C] * float, 
-        batch_size B, 
-        candidate_count C, 
+        prompts [C] * str,
+        token_ids [C] * tuple[int, ...],
+        advantages [C] * float,
+        rewards [C] * float,
+        batch_size B,
+        candidate_count C,
         target_in_beam, short_group_rate, invalid_rate, duplicate_rate
     """
+
     prompts: list[str]
     token_ids: list[tuple[int, ...]]
     advantages: torch.Tensor
     rewards: torch.Tensor
+    exact_rewards: torch.Tensor
+    rank_rewards: torch.Tensor
+    partial_rewards: torch.Tensor
+    long_tail_rewards: torch.Tensor
     batch_size: int
     candidate_count: int
     target_in_beam: float
@@ -117,18 +146,100 @@ def compute_rank_rewards(candidates: list[RLCandidate], target_item_id: str) -> 
     return rewards
 
 
+def common_prefix_ratio(candidate_tokens: tuple[int, ...], target_tokens: tuple[int, ...]) -> float:
+    matched = 0
+    for candidate_token, target_token in zip(candidate_tokens, target_tokens):
+        if candidate_token != target_token:
+            break
+        matched += 1
+    return matched / len(target_tokens)
+
+
+def compute_partial_match_rewards(
+    candidates: list[RLCandidate],
+    target_item_id: str,
+    target_token_ids: tuple[int, ...] | None,
+) -> list[float]:
+    if target_token_ids is None:
+        return [0.0 for _ in candidates]
+    rewards = []
+    for candidate in candidates:
+        if candidate.item_id == target_item_id:
+            rewards.append(0.0)
+        else:
+            rewards.append(common_prefix_ratio(candidate.token_ids, target_token_ids))
+    return rewards
+
+
+def compute_long_tail_rewards(
+    candidates: list[RLCandidate],
+    target_item_id: str,
+    item_popularity: dict[str, float] | None,
+) -> list[float]:
+    if item_popularity is None:
+        return [0.0 for _ in candidates]
+    rewards = []
+    for candidate in candidates:
+        pop_norm = item_popularity.get(candidate.item_id, 0.0)
+        tail = 1.0 - pop_norm
+        rewards.append(tail if candidate.item_id == target_item_id else -pop_norm)
+    return rewards
+
+
+def compute_reward_breakdown(
+    candidates: list[RLCandidate],
+    target_item_id: str,
+    rank_reward_lambda: float,
+    use_partial_match_reward: bool = False,
+    partial_match_lambda: float = 0.0,
+    target_token_ids: tuple[int, ...] | None = None,
+    use_long_tail_reward: bool = False,
+    long_tail_reward_lambda: float = 0.0,
+    item_popularity: dict[str, float] | None = None,
+) -> RewardBreakdown:
+    """
+    [Nb,] reward components and total reward
+    """
+    exact = torch.tensor(compute_rule_rewards(candidates, target_item_id), dtype=torch.float32)
+    rank = torch.tensor(compute_rank_rewards(candidates, target_item_id), dtype=torch.float32)
+    partial = torch.tensor(
+        compute_partial_match_rewards(candidates, target_item_id, target_token_ids)
+        if use_partial_match_reward
+        else [0.0 for _ in candidates],
+        dtype=torch.float32,
+    )
+    long_tail = torch.tensor(
+        compute_long_tail_rewards(candidates, target_item_id, item_popularity)
+        if use_long_tail_reward
+        else [0.0 for _ in candidates],
+        dtype=torch.float32,
+    )
+    total = exact + rank_reward_lambda * rank + partial_match_lambda * partial + long_tail_reward_lambda * long_tail
+    return RewardBreakdown(total=total, exact=exact, rank=rank, partial=partial, long_tail=long_tail)
+
+
 def compute_rewards(
     candidates: list[RLCandidate],
     target_item_id: str,
     rank_reward_lambda: float,
+    use_partial_match_reward: bool = False,
+    partial_match_lambda: float = 0.0,
+    target_token_ids: tuple[int, ...] | None = None,
+    use_long_tail_reward: bool = False,
+    long_tail_reward_lambda: float = 0.0,
+    item_popularity: dict[str, float] | None = None,
 ) -> torch.Tensor:
-    """
-    [Nb,] reward = rule_reward + rank_reward_lambda * rank_reward
-    """
-    rule_rewards = compute_rule_rewards(candidates, target_item_id)
-    rank_rewards = compute_rank_rewards(candidates, target_item_id)
-    rewards = [rule + rank_reward_lambda * rank for rule, rank in zip(rule_rewards, rank_rewards)]
-    return torch.tensor(rewards, dtype=torch.float32)
+    return compute_reward_breakdown(
+        candidates=candidates,
+        target_item_id=target_item_id,
+        rank_reward_lambda=rank_reward_lambda,
+        use_partial_match_reward=use_partial_match_reward,
+        partial_match_lambda=partial_match_lambda,
+        target_token_ids=target_token_ids,
+        use_long_tail_reward=use_long_tail_reward,
+        long_tail_reward_lambda=long_tail_reward_lambda,
+        item_popularity=item_popularity,
+    ).total
 
 
 def normalize_group_advantages(rewards: torch.Tensor) -> torch.Tensor:
@@ -148,7 +259,9 @@ def build_response_batch(
     device: torch.device | str,
 ) -> dict[str, torch.Tensor]:
     if len(prompts) != len(candidate_token_ids):
-        raise ValueError(f"prompts and candidate_token_ids length mismatch: {len(prompts)} vs {len(candidate_token_ids)}")
+        raise ValueError(
+            f"prompts and candidate_token_ids length mismatch: {len(prompts)} vs {len(candidate_token_ids)}"
+        )
 
     rows = []
     for prompt, response_ids_tuple in zip(prompts, candidate_token_ids):
@@ -164,13 +277,11 @@ def build_response_batch(
                 raise ValueError(f"Prompt is too short to truncate for max_length={max_length}")
             prompt_ids = prompt_ids[overflow:]
         input_ids = [*prompt_ids, *response_ids]
-        rows.append(
-            {
-                "input_ids": input_ids,
-                "attention_mask": [1] * len(input_ids),
-                "response_mask": [0] * len(prompt_ids) + [1] * len(response_ids),
-            }
-        )
+        rows.append({
+            "input_ids": input_ids,
+            "attention_mask": [1] * len(input_ids),
+            "response_mask": [0] * len(prompt_ids) + [1] * len(response_ids),
+        })
 
     max_row_length = max(len(row["input_ids"]) for row in rows)
     input_ids = []
@@ -204,7 +315,9 @@ def gather_response_logprobs(
     shifted_labels = input_ids[:, 1:].contiguous()  # [C, T-1]
     shifted_mask = response_mask[:, 1:].contiguous()  # [C, T-1]
     log_probs = F.log_softmax(shifted_logits, dim=-1)  # [C, T-1, V]
-    token_logprobs = log_probs.gather(dim=-1, index=shifted_labels.unsqueeze(-1)).squeeze(-1)  # [C, T-1] select the logprobs of the actual generated tokens
+    token_logprobs = log_probs.gather(dim=-1, index=shifted_labels.unsqueeze(-1)).squeeze(
+        -1
+    )  # [C, T-1] select the logprobs of the actual generated tokens
     token_logprobs = token_logprobs * shifted_mask  # [C, T-1]
     return ResponseLogProbs(
         token_logprobs=token_logprobs,  # [C, T-1]
@@ -237,9 +350,21 @@ def compute_grpo_loss(
     clipped = ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon) * token_advantages  # [C, T-1]
     policy_loss = -(torch.minimum(unclipped, clipped) * response_mask).sum() / token_count  # scalar
     ref_actor_delta = reference_logprobs - current_logprobs  # [C, T-1]
-    kl = ((torch.exp(ref_actor_delta) - ref_actor_delta - 1.0) * response_mask).sum() / token_count  # scalar
+    token_kl = (torch.exp(ref_actor_delta) - ref_actor_delta - 1.0) * response_mask  # [C, T-1]
+    kl = token_kl.sum() / token_count  # scalar
+    sequence_kl = token_kl.sum(dim=1)  # [C,]
+    clip_mask = ((ratio < 1.0 - clip_epsilon) | (ratio > 1.0 + clip_epsilon)).float() * response_mask
+    clip_fraction = clip_mask.sum() / token_count
+    ref_actor_logprob_delta_mean = (ref_actor_delta * response_mask).sum() / token_count
     loss = policy_loss + kl_beta * kl  # scalar
-    return GRPOLoss(loss=loss, policy_loss=policy_loss, kl=kl)
+    return GRPOLoss(
+        loss=loss,
+        policy_loss=policy_loss,
+        kl=kl,
+        kl_seq_mean=sequence_kl.mean(),
+        clip_fraction=clip_fraction,
+        ref_actor_logprob_delta_mean=ref_actor_logprob_delta_mean,
+    )
 
 
 def constrained_sid_beam_rollout(  # noqa: C901
@@ -250,7 +375,7 @@ def constrained_sid_beam_rollout(  # noqa: C901
     num_generations: int,
     max_sid_length: int,
 ) -> tuple[list[RLCandidate], RLRolloutStats]:
-    """ 
+    """
     RLCandidate List, RLRolloutStats
     """
     if num_generations <= 0:
@@ -267,38 +392,57 @@ def constrained_sid_beam_rollout(  # noqa: C901
     beams: list[tuple[tuple[int, ...], float]] = [((), 0.0)]
     completed: list[tuple[tuple[int, ...], float]] = []
     invalid_count = 0
+    next_token_cache: dict[tuple[int, ...], list[int]] = {}
+    item_cache: dict[tuple[int, ...], str | None] = {}
+
+    def next_token_ids(prefix: tuple[int, ...]) -> list[int]:
+        if prefix not in next_token_cache:
+            next_token_cache[prefix] = trie.next_token_ids(prefix)
+        return next_token_cache[prefix]
+
+    def item_id(prefix: tuple[int, ...]) -> str | None:
+        if prefix not in item_cache:
+            item_cache[prefix] = trie.item_id(prefix)
+        return item_cache[prefix]
 
     for _ in range(max_sid_length):
+        active_rows = [(prefix, score, next_token_ids(prefix)) for prefix, score in beams]
+        valid_rows = [(prefix, score, allowed_ids) for prefix, score, allowed_ids in active_rows if allowed_ids]
+        invalid_count += len(active_rows) - len(valid_rows)
+        if not valid_rows:
+            break
+
+        prefix_length = len(valid_rows[0][0])
+        batch_size = len(valid_rows)
+        batch_prompt_ids = prompt_ids.expand(batch_size, -1)
+        batch_attention_mask = attention_mask.expand(batch_size, -1)
+        if prefix_length:
+            prefix_tensor = torch.tensor([prefix for prefix, _, _ in valid_rows], dtype=torch.long, device=device)
+            input_ids = torch.cat([batch_prompt_ids, prefix_tensor], dim=1)
+            prefix_mask = torch.ones((batch_size, prefix_length), dtype=torch.long, device=device)
+            full_attention_mask = torch.cat([batch_attention_mask, prefix_mask], dim=1)
+        else:
+            input_ids = batch_prompt_ids
+            full_attention_mask = batch_attention_mask
+
+        logits = forward_last_token_logits(model, input_ids=input_ids, attention_mask=full_attention_mask)  # [Nb, V]
         beam_candidates: list[tuple[tuple[int, ...], float]] = []
-        for prefix, score in beams:
-            next_token_ids = trie.next_token_ids(prefix)
-            if not next_token_ids:
-                invalid_count += 1
-                continue
-            if prefix:
-                prefix_tensor = torch.tensor([prefix], dtype=torch.long, device=device)
-                input_ids = torch.cat([prompt_ids, prefix_tensor], dim=1)  # prompt + prefix
-                full_attention_mask = torch.cat(
-                    [attention_mask, torch.ones((1, len(prefix)), dtype=torch.long, device=device)],
-                    dim=1,
-                )
-            else:
-                input_ids = prompt_ids
-                full_attention_mask = attention_mask
-            logits = model(input_ids=input_ids, attention_mask=full_attention_mask).logits[0, -1]  # [V,]
-            log_probs = torch.log_softmax(logits[next_token_ids], dim=-1)  # [Nb,]
-            k = min(num_generations, len(next_token_ids))
+        for row_idx, (prefix, score, allowed_ids) in enumerate(valid_rows):
+            allowed_tensor = torch.tensor(allowed_ids, dtype=torch.long, device=device)
+            log_probs = torch.log_softmax(logits[row_idx, allowed_tensor], dim=-1)  # [A]
+            k = min(num_generations, len(allowed_ids))
             top_scores, top_indices = torch.topk(log_probs, k=k)
             for top_score, top_index in zip(top_scores.tolist(), top_indices.tolist()):
-                token_id = next_token_ids[top_index]
+                token_id = allowed_ids[top_index]
                 next_prefix = (*prefix, token_id)
-                next_score = score + top_score  # using log_softmax scores, so we add
-                item_id = trie.item_id(next_prefix)
-                if item_id is not None:
+                next_score = score + top_score
+                if item_id(next_prefix) is not None:
                     completed.append((next_prefix, next_score))
-                if trie.next_token_ids(next_prefix):
+                if next_token_ids(next_prefix):
                     beam_candidates.append((next_prefix, next_score))
-        beams = sorted(beam_candidates, key=lambda row: row[1], reverse=True)[:num_generations]  # beams_size always <= num_generations
+        beams = sorted(beam_candidates, key=lambda row: row[1], reverse=True)[
+            :num_generations
+        ]  # beams_size always <= num_generations
         if len(completed) >= num_generations and not beams:
             break
 
@@ -306,17 +450,17 @@ def constrained_sid_beam_rollout(  # noqa: C901
     candidates: list[RLCandidate] = []
     duplicate_count = 0
     for token_ids, score in sorted(completed, key=lambda row: row[1], reverse=True):
-        item_id = trie.item_id(token_ids)
-        if item_id is None:
+        completed_item_id = item_id(token_ids)
+        if completed_item_id is None:
             invalid_count += 1
             continue
-        if item_id in seen_item_ids:  # deduplication based oon item id
+        if completed_item_id in seen_item_ids:  # deduplication based oon item id
             duplicate_count += 1
             continue
-        seen_item_ids.add(item_id)
+        seen_item_ids.add(completed_item_id)
         candidates.append(
             RLCandidate(
-                item_id=item_id,
+                item_id=completed_item_id,
                 sid=tokenizer.decode(token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False),
                 token_ids=token_ids,
                 score=score,
@@ -352,6 +496,11 @@ class RLModule(L.LightningModule):
         scheduler: Callable | None,
         max_sid_length: int | None = None,
         attn_implementation: str | None = None,
+        use_partial_match_reward: bool = True,
+        partial_match_lambda: float = 0.2,
+        use_long_tail_reward: bool = False,
+        long_tail_reward_lambda: float = 0.05,
+        popularity_train_path: str | None = None,
     ):
         super().__init__()
         self.save_hyperparameters(logger=False, ignore=["optimizer", "scheduler"])
@@ -362,13 +511,14 @@ class RLModule(L.LightningModule):
         self.tokenizer, self.sid_index, self.original_vocab_size = self._load_tokenizer_and_sid_index()
         self.trie = SIDTrie(self.tokenizer, self.sid_index)
         self.max_sid_length = max_sid_length or max(len(tokens) for tokens in self.sid_index.values())
+        self.item_popularity = self._load_item_popularity()
 
         self.model = self._build_adapter_model()  # adapter: actor* and reference
         self._validate_trainable_parameters()
         self._log_trainable_parameters()
 
     def _load_tokenizer_and_sid_index(self) -> tuple[PreTrainedTokenizerBase, dict[str, list[str]], int]:
-        """ 
+        """
         tokenizer, sid_index, original_vocab_size
         """
         export_tokenizer_path = self.sft_export_dir / "tokenizer"
@@ -396,6 +546,30 @@ class RLModule(L.LightningModule):
             pretrained_model_name_or_path=self.hparams.pretrained_model_name_or_path,
             sid_index_path=self.hparams.sid_index_path,
         )
+
+    def _load_item_popularity(self) -> dict[str, float] | None:
+        if not self.hparams.use_long_tail_reward:
+            return None
+        if self.hparams.popularity_train_path is None:
+            raise ValueError("popularity_train_path is required when use_long_tail_reward=True")
+
+        cache_path = Path("data/processed/rl/item_popularity.json")
+        if cache_path.exists():
+            log.info("Loading item popularity from cache: %s", cache_path)
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+
+        log.info("Computing item popularity from training data...")
+        counts = Counter(str(row["item_id"]) for row in load_split_csv(Path(self.hparams.popularity_train_path)))
+        max_log_count = max(math.log1p(count) for count in counts.values())
+        popularity = {item_id: math.log1p(count) / max_log_count for item_id, count in counts.items()}
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(popularity, indent=2), encoding="utf-8")
+
+        return popularity
+
+    def _target_token_ids(self, target_sid: str) -> tuple[int, ...]:
+        return tuple(self.tokenizer.encode(target_sid, add_special_tokens=False))
 
     def _build_adapter_model(self) -> torch.nn.Module:
         adapter_dir = self.sft_export_dir / "adapter"
@@ -440,7 +614,9 @@ class RLModule(L.LightningModule):
         total_params = sum(parameter.numel() for parameter in self.model.parameters())
         trainable_params = sum(parameter.numel() for parameter in self.model.parameters() if parameter.requires_grad)
         ratio = 100 * trainable_params / total_params
-        log.info("RL train mode=lora trainable_params=%s total_params=%s ratio=%.4f%%", trainable_params, total_params, ratio)
+        log.info(
+            "RL train mode=lora trainable_params=%s total_params=%s ratio=%.4f%%", trainable_params, total_params, ratio
+        )
 
     def _set_actor(self) -> None:
         self.model.set_adapter("actor")
@@ -472,6 +648,10 @@ class RLModule(L.LightningModule):
         flat_token_ids: list[tuple[int, ...]] = []
         advantages_by_group = []
         rewards_by_group = []
+        exact_rewards_by_group = []
+        rank_rewards_by_group = []
+        partial_rewards_by_group = []
+        long_tail_rewards_by_group = []
         target_hits = 0
         short_groups = 0
         invalid_count = 0
@@ -480,16 +660,31 @@ class RLModule(L.LightningModule):
 
         prompts = batch["prompts"]  # list
         target_item_ids = batch["target_item_ids"]  # list
-        for prompt, target_item_id in zip(prompts, target_item_ids):
+        target_sids = batch["target_sids"]  # list
+        for prompt, target_item_id, target_sid in zip(prompts, target_item_ids, target_sids):
             candidates, stats = self._rollout_one(prompt)
             if not candidates:
                 raise ValueError("Constrained beam rollout produced no valid candidates")
-            rewards = compute_rewards(candidates, target_item_id, self.hparams.rank_reward_lambda)  # [Nb,]
-            advantages = normalize_group_advantages(rewards)  # [Nb,]
+            reward_breakdown = compute_reward_breakdown(
+                candidates=candidates,
+                target_item_id=target_item_id,
+                rank_reward_lambda=self.hparams.rank_reward_lambda,
+                use_partial_match_reward=self.hparams.use_partial_match_reward,
+                partial_match_lambda=self.hparams.partial_match_lambda,
+                target_token_ids=self._target_token_ids(target_sid),
+                use_long_tail_reward=self.hparams.use_long_tail_reward,
+                long_tail_reward_lambda=self.hparams.long_tail_reward_lambda,
+                item_popularity=self.item_popularity,
+            )
+            advantages = normalize_group_advantages(reward_breakdown.total)  # [Nb,]
             flat_prompts.extend([prompt] * len(candidates))  # [Nb] * str
             flat_token_ids.extend([candidate.token_ids for candidate in candidates])  # [Nb] * tuple[int, ...]
             advantages_by_group.append(advantages)
-            rewards_by_group.append(rewards)
+            rewards_by_group.append(reward_breakdown.total)
+            exact_rewards_by_group.append(reward_breakdown.exact)
+            rank_rewards_by_group.append(reward_breakdown.rank)
+            partial_rewards_by_group.append(reward_breakdown.partial)
+            long_tail_rewards_by_group.append(reward_breakdown.long_tail)
             target_hits += int(any(candidate.item_id == target_item_id for candidate in candidates))
             short_groups += int(len(candidates) < self.hparams.num_generations)
             invalid_count += stats.invalid_count
@@ -506,6 +701,10 @@ class RLModule(L.LightningModule):
             token_ids=flat_token_ids,  # [C] * tuple[int, ...], candidate token ids
             advantages=torch.cat(advantages_by_group),  # [C,]
             rewards=torch.cat(rewards_by_group),  # [C,]
+            exact_rewards=torch.cat(exact_rewards_by_group),  # [C,]
+            rank_rewards=torch.cat(rank_rewards_by_group),  # [C,]
+            partial_rewards=torch.cat(partial_rewards_by_group),  # [C,]
+            long_tail_rewards=torch.cat(long_tail_rewards_by_group),  # [C,]
             batch_size=batch_size,  # B
             candidate_count=candidate_count,  # C
             target_in_beam=target_hits / batch_size,
@@ -539,10 +738,126 @@ class RLModule(L.LightningModule):
         context = nullcontext() if grad else torch.no_grad()
         with context:
             outputs = self.model(input_ids=encoded["input_ids"], attention_mask=encoded["attention_mask"])
-            logprobs: ResponseLogProbs = gather_response_logprobs(outputs.logits, encoded["input_ids"], encoded["response_mask"])
+            logprobs: ResponseLogProbs = gather_response_logprobs(
+                outputs.logits, encoded["input_ids"], encoded["response_mask"]
+            )
         if was_training:
             self.model.train()
         return logprobs
+
+    def _log_rollout_metrics(self, rollout: RolloutBatch, stage: str, on_step: bool, prog_bar: bool) -> None:
+        self.log(
+            f"{stage}/reward_mean",
+            rollout.rewards.mean(),
+            prog_bar=prog_bar,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/reward_std",
+            rollout.rewards.std(unbiased=False),
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/reward_nonzero_rate",
+            (rollout.rewards != 0).float().mean(),
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/exact_reward_nonzero_rate",
+            (rollout.exact_rewards != 0).float().mean(),
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/rank_reward_mean",
+            rollout.rank_rewards.mean(),
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/partial_reward_mean",
+            rollout.partial_rewards.mean(),
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/partial_reward_nonzero_rate",
+            (rollout.partial_rewards != 0).float().mean(),
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/long_tail_reward_mean",
+            rollout.long_tail_rewards.mean(),
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/advantage_std",
+            rollout.advantages.std(unbiased=False),
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.candidate_count,
+        )
+        self.log(
+            f"{stage}/rule_hit_at_g",
+            rollout.target_in_beam,
+            prog_bar=prog_bar,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
+        self.log(
+            f"{stage}/target_in_beam",
+            rollout.target_in_beam,
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
+        self.log(
+            f"{stage}/short_group_rate",
+            rollout.short_group_rate,
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
+        self.log(
+            f"{stage}/invalid_rate",
+            rollout.invalid_rate,
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
+        self.log(
+            f"{stage}/duplicate_rate",
+            rollout.duplicate_rate,
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         _ = batch_idx
@@ -550,10 +865,7 @@ class RLModule(L.LightningModule):
         advantages = rollout.advantages.to(self.device)  # [C,]
         with torch.no_grad():
             old_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
-                rollout.prompts, 
-                rollout.token_ids, 
-                adapter_name="actor", 
-                grad=False
+                rollout.prompts, rollout.token_ids, adapter_name="actor", grad=False
             )
             reference_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
                 rollout.prompts,
@@ -562,10 +874,7 @@ class RLModule(L.LightningModule):
                 grad=False,
             )
         current_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
-            rollout.prompts, 
-            rollout.token_ids, 
-            adapter_name="actor", 
-            grad=True
+            rollout.prompts, rollout.token_ids, adapter_name="actor", grad=True
         )
         loss = compute_grpo_loss(
             current_logprobs=current_logprobs.token_logprobs,
@@ -580,24 +889,48 @@ class RLModule(L.LightningModule):
             raise ValueError(f"Non-finite train loss: {loss.loss}")
         self._set_actor()
         self.log("train/loss", loss.loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
-        self.log("train/policy_loss", loss.policy_loss, prog_bar=False, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
+        self.log(
+            "train/policy_loss",
+            loss.policy_loss,
+            prog_bar=False,
+            on_step=True,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
         self.log("train/kl", loss.kl, prog_bar=True, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
-        self.log("train/reward_mean", rollout.rewards.mean(), prog_bar=True, on_step=True, on_epoch=True, batch_size=rollout.candidate_count)
-        self.log("train/rule_hit_at_g", rollout.target_in_beam, prog_bar=True, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
-        self.log("train/target_in_beam", rollout.target_in_beam, prog_bar=False, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
-        self.log("train/short_group_rate", rollout.short_group_rate, prog_bar=False, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
-        self.log("train/invalid_rate", rollout.invalid_rate, prog_bar=False, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
-        self.log("train/duplicate_rate", rollout.duplicate_rate, prog_bar=False, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
+        self.log(
+            "train/kl_token_mean", loss.kl, prog_bar=False, on_step=True, on_epoch=True, batch_size=rollout.batch_size
+        )
+        self.log(
+            "train/kl_seq_mean",
+            loss.kl_seq_mean,
+            prog_bar=False,
+            on_step=True,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
+        self.log(
+            "train/clip_fraction",
+            loss.clip_fraction,
+            prog_bar=False,
+            on_step=True,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
+        self.log(
+            "train/ref_actor_logprob_delta_mean",
+            loss.ref_actor_logprob_delta_mean,
+            prog_bar=False,
+            on_step=True,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
+        self._log_rollout_metrics(rollout, stage="train", on_step=True, prog_bar=True)
         return loss.loss
 
     def _eval_step(self, batch: dict[str, Any], stage: str) -> None:
         rollout = self._build_rollout_batch(batch)
-        self.log(f"{stage}/reward_mean", rollout.rewards.mean(), prog_bar=False, on_step=False, on_epoch=True, batch_size=rollout.candidate_count)
-        self.log(f"{stage}/rule_hit_at_g", rollout.target_in_beam, prog_bar=True, on_step=False, on_epoch=True, batch_size=rollout.batch_size)
-        self.log(f"{stage}/target_in_beam", rollout.target_in_beam, prog_bar=False, on_step=False, on_epoch=True, batch_size=rollout.batch_size)
-        self.log(f"{stage}/short_group_rate", rollout.short_group_rate, prog_bar=False, on_step=False, on_epoch=True, batch_size=rollout.batch_size)
-        self.log(f"{stage}/invalid_rate", rollout.invalid_rate, prog_bar=False, on_step=False, on_epoch=True, batch_size=rollout.batch_size)
-        self.log(f"{stage}/duplicate_rate", rollout.duplicate_rate, prog_bar=False, on_step=False, on_epoch=True, batch_size=rollout.batch_size)
+        self._log_rollout_metrics(rollout, stage=stage, on_step=False, prog_bar=stage == "val")
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> None:
         _ = batch_idx
@@ -615,17 +948,20 @@ class RLModule(L.LightningModule):
         decay_parameters = []
         no_decay_parameters = []
         for name, parameter in named_parameters:
-            if getattr(parameter, "_sid_row_masked", False) or parameter.ndim == 1 or name.endswith(".bias") or "norm" in name.lower():
+            if (
+                getattr(parameter, "_sid_row_masked", False)
+                or parameter.ndim == 1
+                or name.endswith(".bias")
+                or "norm" in name.lower()
+            ):
                 no_decay_parameters.append(parameter)
             else:
                 decay_parameters.append(parameter)
 
-        optimizer = self._optimizer(
-            [
-                {"params": decay_parameters},
-                {"params": no_decay_parameters, "weight_decay": 0.0},
-            ]
-        )
+        optimizer = self._optimizer([
+            {"params": decay_parameters},
+            {"params": no_decay_parameters, "weight_decay": 0.0},
+        ])
         if self._scheduler is None:
             return {"optimizer": optimizer}
 

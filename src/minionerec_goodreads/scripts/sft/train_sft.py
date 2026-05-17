@@ -9,15 +9,10 @@ from lightning import Callback, LightningDataModule, LightningModule, Trainer
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
 
-from minionerec_goodreads.utils import (
-    RankedLogger,
-    extras,
-    get_metric_value,
-    instantiate_callbacks,
-    instantiate_loggers,
-    log_hyperparameters,
-    task_wrapper,
-)
+from minionerec_goodreads.utils.instantiators import instantiate_callbacks, instantiate_loggers
+from minionerec_goodreads.utils.logging_utils import log_hyperparameters
+from minionerec_goodreads.utils.pylogger import RankedLogger
+from minionerec_goodreads.utils.utils import extras, get_metric_value, task_wrapper
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -34,6 +29,9 @@ torch.set_float32_matmul_precision("high")
 def train(cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
+
+    if cfg.model.get("lora_backend") == "unsloth":
+        import unsloth  # noqa: F401
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)

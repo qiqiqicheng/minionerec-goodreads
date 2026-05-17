@@ -1,3 +1,13 @@
+## 0517
+完成第二次 sft 训练，效果应该可以
+```bash
+uv run src/minionerec_goodreads/scripts/sft/export_sft.py \
+    --checkpoint-path logs/train_sft/runs/2026-05-16_13-54-13/checkpoints/epoch_006.ckpt \
+    --output-dir data/ckpts/sft/epoch_6 \
+    --sid-index-path data/processed/rqvae/goodreads.index.json \
+    --item-path data/processed/rqvae/goodreads.item.json
+```
+
 ## 0514
 在 autodl 上完成了第一次的 sft 训练，仅训练了 4 epoch，从 evaluate 结果看还是很差，本阶段的结果见 `logs/train_sft/runs/2026-05-13_21-53-27` 和 
 

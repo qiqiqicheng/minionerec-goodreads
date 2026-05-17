@@ -6,33 +6,37 @@ import json
 import shutil
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from omegaconf import OmegaConf
 
-from minionerec_goodreads.models.sft import SFTModule
-from minionerec_goodreads.utils.sft import check_sid_tokenizer_atomicity
+if TYPE_CHECKING:
+    from minionerec_goodreads.models.sft import SFTModule
+
+DEFAULT_BASE_MODEL_PATH = "/mnt/disk2/chengqi/models/llm/Qwen/Qwen2.5-3B-Instruct"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export an SFT Lightning checkpoint for reproducible inference/eval.")
     parser.add_argument("--checkpoint-path", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--pretrained-model-name-or-path", default="/mnt/disk2/chengqi/models/llm/Qwen/Qwen2.5-3B-Instruct")
+    parser.add_argument("--pretrained-model-name-or-path", default=None)
     parser.add_argument("--sid-index-path", required=True, type=Path)
     parser.add_argument("--item-path", required=True, type=Path)
     parser.add_argument("--resolved-config-path", default=None, type=Path)
-    parser.add_argument("--train-mode", default="qlora", choices=["full_finetune", "new_token_only", "qlora"])
-    parser.add_argument("--torch-dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--train-mode", default=None, choices=["full_finetune", "new_token_only", "qlora"])
+    parser.add_argument("--torch-dtype", default=None, choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--gradient-checkpointing", action="store_true")
+    parser.add_argument("--lora-backend", default=None, choices=["peft", "unsloth"])
+    parser.add_argument("--max-seq-length", default=None, type=int)
     parser.add_argument("--load-in-4bit", action="store_true")
-    parser.add_argument("--lora-r", default=16, type=int)
-    parser.add_argument("--lora-alpha", default=32, type=int)
-    parser.add_argument("--lora-dropout", default=0.05, type=float)
+    parser.add_argument("--lora-r", default=None, type=int)
+    parser.add_argument("--lora-alpha", default=None, type=int)
+    parser.add_argument("--lora-dropout", default=None, type=float)
     parser.add_argument(
         "--lora-target-modules",
-        default="q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj",
+        default=None,
     )
     parser.add_argument("--export-type", default="auto", choices=["auto", "adapter", "full_model"])
     return parser.parse_args()
@@ -62,22 +66,48 @@ def copy_artifact(src: Path, dst: Path) -> None:
 
 
 def load_sft_module(args: argparse.Namespace) -> SFTModule:
+    checkpoint = torch.load(args.checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint_hparams = checkpoint.get("hyper_parameters", {})
+    train_mode = args.train_mode or checkpoint_hparams.get("train_mode", "qlora")
+    torch_dtype = args.torch_dtype or checkpoint_hparams.get("torch_dtype", "bfloat16")
+    base_model_path = args.pretrained_model_name_or_path or checkpoint_hparams.get("pretrained_model_name_or_path") or DEFAULT_BASE_MODEL_PATH
+    lora_backend = args.lora_backend or checkpoint_hparams.get("lora_backend", "peft")
+    max_seq_length = args.max_seq_length if args.max_seq_length is not None else checkpoint_hparams.get("max_seq_length")
+    lora_r = args.lora_r if args.lora_r is not None else checkpoint_hparams.get("lora_r", 16)
+    lora_alpha = args.lora_alpha if args.lora_alpha is not None else checkpoint_hparams.get("lora_alpha", 32)
+    lora_dropout = args.lora_dropout if args.lora_dropout is not None else checkpoint_hparams.get("lora_dropout", 0.05)
+    if args.lora_target_modules is None:
+        lora_target_modules = checkpoint_hparams.get("lora_target_modules")
+        if lora_target_modules is None:
+            lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"]
+    else:
+        lora_target_modules = [name for name in args.lora_target_modules.split(",") if name]
+    if lora_target_modules is not None and not isinstance(lora_target_modules, list):
+        lora_target_modules = list(lora_target_modules)
+    gradient_checkpointing = args.gradient_checkpointing or checkpoint_hparams.get("gradient_checkpointing", False)
+    load_in_4bit = args.load_in_4bit or checkpoint_hparams.get("load_in_4bit", False)
+    if lora_backend == "unsloth":
+        import unsloth  # noqa: F401
+
+    from minionerec_goodreads.models.sft import SFTModule
+
     module = SFTModule(
-        pretrained_model_name_or_path=args.pretrained_model_name_or_path,
+        pretrained_model_name_or_path=base_model_path,
         sid_index_path=str(args.sid_index_path),
-        train_mode=args.train_mode,
+        train_mode=train_mode,
         warmup_ratio=0.0,
-        gradient_checkpointing=args.gradient_checkpointing,
-        torch_dtype=args.torch_dtype,
+        gradient_checkpointing=gradient_checkpointing,
+        torch_dtype=torch_dtype,
         optimizer=partial(torch.optim.AdamW, lr=0.0),
         scheduler=None,
-        lora_r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        lora_target_modules=[name for name in args.lora_target_modules.split(",") if name],
-        load_in_4bit=args.load_in_4bit,
+        lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        lora_target_modules=lora_target_modules,
+        lora_backend=lora_backend,
+        max_seq_length=max_seq_length,
+        load_in_4bit=load_in_4bit,
     )
-    checkpoint = torch.load(args.checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = checkpoint.get("state_dict", checkpoint)
     load_result = module.load_state_dict(state_dict, strict=False)
     if load_result.missing_keys or load_result.unexpected_keys:
@@ -102,15 +132,19 @@ def save_model_artifact(module: SFTModule, output_dir: Path, export_type: str) -
 
 
 def build_manifest(args: argparse.Namespace, module: SFTModule, saved_model_type: str) -> dict[str, Any]:
+    from minionerec_goodreads.utils.sft import check_sid_tokenizer_atomicity
+
     sid_lengths = [len(tokens) for tokens in module.sid_index.values()]
     tokenizer_check = check_sid_tokenizer_atomicity(module.tokenizer, module.sid_index, sample_size=None)
     manifest = {
         "checkpoint_path": str(args.checkpoint_path),
-        "base_model_path": args.pretrained_model_name_or_path,
-        "train_mode": args.train_mode,
+        "base_model_path": module.hparams.pretrained_model_name_or_path,
+        "train_mode": module.hparams.train_mode,
+        "lora_backend": module.hparams.lora_backend,
+        "max_seq_length": module.hparams.max_seq_length,
         "export_type": saved_model_type,
-        "torch_dtype": args.torch_dtype,
-        "load_in_4bit": args.load_in_4bit,
+        "torch_dtype": module.hparams.torch_dtype,
+        "load_in_4bit": module.hparams.load_in_4bit,
         "sid_index_path": str(args.sid_index_path),
         "sid_index_sha256": file_sha256(args.sid_index_path),
         "item_path": str(args.item_path),

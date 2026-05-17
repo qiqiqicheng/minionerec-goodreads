@@ -16,7 +16,7 @@ model_checkpoint:
 
 early_stopping:
   monitor: "val/rule_hit_at_g"
-  patience: 3
+  patience: 2
   mode: "max"
 
 model_summary:

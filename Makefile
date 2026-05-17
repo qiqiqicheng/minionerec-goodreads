@@ -13,6 +13,11 @@ rl:
 	@uv sync
 	@uv run python -m src.minionerec_goodreads.scripts.rl.train_rl
 
+.PHONY: eval
+eval:
+	@uv sync
+	@uv run python -m src.minionerec_goodreads.scripts.eval
+
 .PHONY: sid
 sid:
 	@uv sync

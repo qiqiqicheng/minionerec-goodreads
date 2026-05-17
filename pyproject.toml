@@ -23,6 +23,8 @@ dependencies = [
     "peft>=0.15.2",
     "wandb>=0.26.1",
     "flash-attn",
+    "vllm>=0.11.0",
+    "unsloth>=2026.1.2",
 ]
 classifiers = [
     "Intended Audience :: Developers",

@@ -39,6 +39,14 @@ def _import_peft() -> tuple[Any, Any, Any, Any]:
     return LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
 
+def _import_unsloth() -> Any:
+    try:
+        from unsloth import FastLanguageModel
+    except ImportError as error:
+        raise ImportError("Unsloth LoRA training requires unsloth to be installed") from error
+    return FastLanguageModel
+
+
 @dataclass
 class TrainableRange:
     start: int
@@ -61,6 +69,8 @@ class SFTModule(L.LightningModule):
         lora_alpha: int = 32,
         lora_dropout: float = 0.05,
         lora_target_modules: list[str] | None = None,
+        lora_backend: str = "peft",
+        max_seq_length: int | None = None,
         load_in_4bit: bool = False,
         bnb_4bit_compute_dtype: str = "bfloat16",
         bnb_4bit_quant_type: str = "nf4",
@@ -79,8 +89,15 @@ class SFTModule(L.LightningModule):
         self.trainable_range: TrainableRange | None = None
 
         if train_mode == "qlora":
-            self.model = self._build_lora_model()
+            if lora_backend == "peft":
+                self.model = self._build_lora_model()
+            elif lora_backend == "unsloth":
+                self.model = self._build_unsloth_lora_model()
+            else:
+                raise ValueError(f"Unsupported lora_backend: {lora_backend}")
         else:
+            if lora_backend != "peft":
+                raise ValueError(f"lora_backend={lora_backend!r} is only supported with train_mode='qlora'")
             self.model = self._build_dense_model()
 
         self._configure_trainable_parameters()
@@ -140,6 +157,40 @@ class SFTModule(L.LightningModule):
             task_type=TaskType.CAUSAL_LM,
         )
         model = get_peft_model(model, lora_config)
+        model.config.use_cache = False
+        return model
+
+    def _build_unsloth_lora_model(self) -> torch.nn.Module:
+        if self.hparams.load_in_4bit:
+            raise ValueError("Unsloth SFT backend in this project is non-quantized; set load_in_4bit=False")
+        FastLanguageModel = _import_unsloth()
+        gradient_checkpointing = "unsloth" if self.hparams.gradient_checkpointing else False
+        max_seq_length = self.hparams.max_seq_length or 2048
+        load_in_16bit = self.hparams.torch_dtype != "float32"
+        model_kwargs: dict[str, Any] = {}
+        if self.hparams.attn_implementation is not None:
+            model_kwargs["attn_implementation"] = self.hparams.attn_implementation
+        model, _ = FastLanguageModel.from_pretrained(
+            model_name=self.hparams.pretrained_model_name_or_path,
+            max_seq_length=max_seq_length,
+            dtype=_resolve_dtype(self.hparams.torch_dtype),
+            load_in_4bit=False,
+            load_in_16bit=load_in_16bit,
+            trust_remote_code=True,
+            use_gradient_checkpointing=gradient_checkpointing,
+            resize_model_vocab=len(self.tokenizer),
+            **model_kwargs,
+        )
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=self.hparams.lora_r,
+            target_modules=self.hparams.lora_target_modules,
+            lora_alpha=self.hparams.lora_alpha,
+            lora_dropout=self.hparams.lora_dropout,
+            bias="none",
+            use_gradient_checkpointing=gradient_checkpointing,
+            max_seq_length=max_seq_length,
+        )
         model.config.use_cache = False
         return model
 
@@ -210,9 +261,14 @@ class SFTModule(L.LightningModule):
         total_params = sum(parameter.numel() for parameter in self.model.parameters())
         trainable_params = sum(parameter.numel() for parameter in self.model.parameters() if parameter.requires_grad)
         ratio = 100 * trainable_params / total_params
-        mode = "lora_4bit" if self.hparams.train_mode == "qlora" and self.hparams.load_in_4bit else self.hparams.train_mode
-        if self.hparams.train_mode == "qlora" and not self.hparams.load_in_4bit:
-            mode = "lora"
+        mode = self.hparams.train_mode
+        if mode == "qlora":
+            if self.hparams.lora_backend == "unsloth":
+                mode = "unsloth_lora"
+            elif self.hparams.load_in_4bit:
+                mode = "lora_4bit"
+            else:
+                mode = "lora"
         log.info("SFT train mode=%s trainable_params=%s total_params=%s ratio=%.4f%%", mode, trainable_params, total_params, ratio)
         if self.trainable_range is not None:
             log.info("Trainable SID token rows=[%s, %s)", self.trainable_range.start, self.trainable_range.end)
