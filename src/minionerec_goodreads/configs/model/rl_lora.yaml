@@ -5,6 +5,12 @@ sft_export_dir: ${data.sft_export_dir}
 sid_index_path: ${data.sid_index_path}
 max_length: 1024
 num_generations: 4
+logprob_micro_batch_size: 4
+optimizer_accumulate_batches: 8
+rollout_backend: "hf"
+vllm_gpu_memory_utilization: 0.30
+vllm_enable_prefix_caching: True
+vllm_max_lora_rank: 16
 rank_reward_lambda: 0.1
 use_partial_match_reward: True
 partial_match_lambda: 0.2
@@ -22,7 +28,7 @@ bnb_4bit_compute_dtype: "bfloat16"
 bnb_4bit_quant_type: "nf4"
 bnb_4bit_use_double_quant: True
 max_sid_length: null
-attn_implementation: "flash_attention_2"
+attn_implementation: "sdpa"
 
 optimizer:
   _target_: torch.optim.AdamW

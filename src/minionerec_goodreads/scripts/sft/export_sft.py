@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from omegaconf import OmegaConf
+from safetensors.torch import save_file
 
 if TYPE_CHECKING:
     from minionerec_goodreads.models.sft import SFTModule
@@ -119,13 +120,32 @@ def load_sft_module(args: argparse.Namespace) -> SFTModule:
     return module
 
 
+def save_new_token_embeddings(module: SFTModule, adapter_dir: Path) -> None:
+    start = module.original_vocab_size
+    end = len(module.tokenizer)
+    if end <= start:
+        raise ValueError("SID adapter export requires added tokenizer rows")
+
+    input_embedding = module.model.get_input_embeddings()
+    if input_embedding is None:
+        raise ValueError("Model must expose input embeddings")
+
+    tensors = {"input_embeddings": input_embedding.weight.detach()[start:end].cpu()}
+    output_embedding = module.model.get_output_embeddings()
+    if output_embedding is not None:
+        tensors["output_embeddings"] = output_embedding.weight.detach()[start:end].cpu()
+    save_file(tensors, adapter_dir / "new_embeddings.safetensors", metadata={"format": "pt"})
+
+
 def save_model_artifact(module: SFTModule, output_dir: Path, export_type: str) -> str:
     if export_type == "auto":
         export_type = "adapter" if module.hparams.train_mode == "qlora" else "full_model"
     if export_type == "adapter":
         if module.hparams.train_mode != "qlora":
             raise ValueError("adapter export is only valid for LoRA train_mode=qlora")
-        module.model.save_pretrained(output_dir / "adapter", save_embedding_layers=True)
+        adapter_dir = output_dir / "adapter"
+        module.model.save_pretrained(adapter_dir, save_embedding_layers=False)
+        save_new_token_embeddings(module, adapter_dir)
         return "adapter"
     module.model.save_pretrained(output_dir / "model")
     return "full_model"
@@ -155,6 +175,8 @@ def build_manifest(args: argparse.Namespace, module: SFTModule, saved_model_type
         "sid_max_length": max(sid_lengths),
         "original_vocab_size": module.original_vocab_size,
         "augmented_vocab_size": len(module.tokenizer),
+        "adapter_embedding_format": "new_token_rows" if saved_model_type == "adapter" else None,
+        "sid_token_row_count": len(module.tokenizer) - module.original_vocab_size,
     }
     resolved_config_path = infer_resolved_config_path(args.checkpoint_path, args.resolved_config_path)
     if resolved_config_path is not None:

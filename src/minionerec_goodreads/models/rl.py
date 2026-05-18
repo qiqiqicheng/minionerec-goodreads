@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import shutil
 from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -12,9 +13,12 @@ from typing import Any, Callable
 import lightning as L
 import torch
 import torch.nn.functional as F
+from safetensors import safe_open
+from safetensors.torch import load_file, save_file
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig, PreTrainedTokenizerBase
 
 from minionerec_goodreads.dataset.sft_dataset import load_split_csv
+from minionerec_goodreads.metrics.rec import hit_at_k, mrr_at_k, ndcg_at_k
 from minionerec_goodreads.models.sft import _import_bitsandbytes, _resolve_dtype
 from minionerec_goodreads.utils.sft import build_tokenizer, load_sid_index, load_tokenizer
 from minionerec_goodreads.utils.sft_generation import forward_last_token_logits
@@ -99,6 +103,7 @@ class RolloutBatch:
         batch_size B,
         candidate_count C,
         target_in_beam, short_group_rate, invalid_rate, duplicate_rate
+        rec_metrics
     """
 
     prompts: list[str]
@@ -115,6 +120,7 @@ class RolloutBatch:
     short_group_rate: float
     invalid_rate: float
     duplicate_rate: float
+    rec_metrics: dict[str, float]
 
 
 def _import_peft_rl() -> tuple[Any, Any]:
@@ -123,6 +129,182 @@ def _import_peft_rl() -> tuple[Any, Any]:
     except ImportError as error:
         raise ImportError("RL LoRA training requires peft to be installed") from error
     return PeftModel, prepare_model_for_kbit_training
+
+
+def _import_vllm_rl() -> tuple[Any, Any, Any]:
+    try:
+        from vllm import LLM, SamplingParams
+        from vllm.lora.request import LoRARequest
+    except ImportError as error:
+        raise ImportError("vLLM rollout requires vllm to be installed") from error
+    return LLM, SamplingParams, LoRARequest
+
+
+def _is_saved_embedding_key(key: str) -> bool:
+    return key.endswith("embed_tokens.weight") or key.endswith("lm_head.weight")
+
+
+def _adapter_tensor_path(adapter_dir: Path) -> Path:
+    path = adapter_dir / "adapter_model.safetensors"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing adapter safetensors: {path}")
+    return path
+
+
+def _file_sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _new_embedding_rows_from_adapter(
+    adapter_dir: Path,
+    original_vocab_size: int,
+    augmented_vocab_size: int,
+) -> dict[str, torch.Tensor]:
+    new_embeddings_path = adapter_dir / "new_embeddings.safetensors"
+    if new_embeddings_path.exists():
+        rows = load_file(new_embeddings_path, device="cpu")
+        if "input_embeddings" not in rows:
+            raise ValueError(f"{new_embeddings_path} must contain input_embeddings")
+        return rows
+
+    tensor_path = _adapter_tensor_path(adapter_dir)
+    rows: dict[str, torch.Tensor] = {}
+    with safe_open(tensor_path, framework="pt", device="cpu") as file:
+        for key in file.keys():
+            tensor_name = None
+            if key.endswith("embed_tokens.weight"):
+                tensor_name = "input_embeddings"
+            elif key.endswith("lm_head.weight"):
+                tensor_name = "output_embeddings"
+            if tensor_name is None:
+                continue
+            weight = file.get_tensor(key)
+            if weight.shape[0] == augmented_vocab_size:
+                rows[tensor_name] = weight[original_vocab_size:augmented_vocab_size].contiguous()
+            elif weight.shape[0] == augmented_vocab_size - original_vocab_size:
+                rows[tensor_name] = weight.contiguous()
+            else:
+                raise ValueError(
+                    f"Unexpected embedding shape for {key}: {tuple(weight.shape)}, "
+                    f"expected vocab {augmented_vocab_size} or new rows {augmented_vocab_size - original_vocab_size}"
+                )
+    if "input_embeddings" not in rows:
+        raise ValueError(f"Adapter {adapter_dir} does not contain new SID token embeddings")
+    return rows
+
+
+def prepare_lora_only_adapter_dir(
+    adapter_dir: Path,
+    original_vocab_size: int,
+    augmented_vocab_size: int,
+) -> Path:
+    tensor_path = _adapter_tensor_path(adapter_dir)
+    with safe_open(tensor_path, framework="pt", device="cpu") as file:
+        keys = list(file.keys())
+        metadata = file.metadata() or {"format": "pt"}
+    if not any(_is_saved_embedding_key(key) for key in keys):
+        if not (adapter_dir / "new_embeddings.safetensors").exists():
+            raise ValueError(f"LoRA-only adapter {adapter_dir} is missing new_embeddings.safetensors")
+        return adapter_dir
+
+    target_dir = adapter_dir.parent / "adapter_lora_only"
+    target_tensor_path = target_dir / "adapter_model.safetensors"
+    target_embeddings_path = target_dir / "new_embeddings.safetensors"
+    if target_tensor_path.exists() and target_embeddings_path.exists():
+        return target_dir
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for filename in ["adapter_config.json", "README.md"]:
+        src = adapter_dir / filename
+        if src.exists():
+            shutil.copy2(src, target_dir / filename)
+
+    rows = _new_embedding_rows_from_adapter(adapter_dir, original_vocab_size, augmented_vocab_size)
+    save_file(rows, target_embeddings_path, metadata={"format": "pt"})
+
+    tensors: dict[str, torch.Tensor] = {}
+    with safe_open(tensor_path, framework="pt", device="cpu") as file:
+        for key in keys:
+            if not _is_saved_embedding_key(key):
+                tensors[key] = file.get_tensor(key)
+    if not tensors:
+        raise ValueError(f"Adapter {adapter_dir} has no LoRA tensors after removing embeddings")
+    save_file(tensors, target_tensor_path, metadata=metadata)
+    return target_dir
+
+
+def prepare_augmented_vllm_base_dir(
+    base_model_path: str,
+    tokenizer_dir: Path,
+    adapter_dir: Path,
+    output_dir: Path,
+    original_vocab_size: int,
+    augmented_vocab_size: int,
+    torch_dtype: str,
+) -> Path:
+    source_hash = _file_sha256(adapter_dir / "new_embeddings.safetensors")
+    manifest_path = output_dir / "minionerec_vllm_manifest.json"
+    config_path = output_dir / "config.json"
+    model_index_path = output_dir / "model.safetensors.index.json"
+    cache_valid = False
+    if config_path.exists() and model_index_path.exists() and manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        cache_valid = (
+            manifest.get("base_model_path") == base_model_path
+            and manifest.get("original_vocab_size") == original_vocab_size
+            and manifest.get("augmented_vocab_size") == augmented_vocab_size
+            and manifest.get("torch_dtype") == torch_dtype
+            and manifest.get("new_embeddings_sha256") == source_hash
+        )
+    if cache_valid:
+        return output_dir
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        torch_dtype=_resolve_dtype(torch_dtype),
+        trust_remote_code=True,
+        device_map="cpu",
+    )
+    tokenizer = load_tokenizer(tokenizer_dir, trust_remote_code=True)
+    model.resize_token_embeddings(augmented_vocab_size)
+    rows = _new_embedding_rows_from_adapter(adapter_dir, original_vocab_size, augmented_vocab_size)
+    input_embedding = model.get_input_embeddings()
+    if input_embedding is None:
+        raise ValueError("Base model must expose input embeddings")
+    with torch.no_grad():
+        input_rows = rows["input_embeddings"].to(dtype=input_embedding.weight.dtype)
+        input_embedding.weight[original_vocab_size:augmented_vocab_size].copy_(input_rows)
+        output_embedding = model.get_output_embeddings()
+        if output_embedding is not None and output_embedding.weight is not input_embedding.weight:
+            output_rows = rows.get("output_embeddings", rows["input_embeddings"]).to(dtype=output_embedding.weight.dtype)
+            output_embedding.weight[original_vocab_size:augmented_vocab_size].copy_(output_rows)
+    model.save_pretrained(output_dir, safe_serialization=True)
+    tokenizer.save_pretrained(output_dir)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "base_model_path": base_model_path,
+                "original_vocab_size": original_vocab_size,
+                "augmented_vocab_size": augmented_vocab_size,
+                "torch_dtype": torch_dtype,
+                "new_embeddings_sha256": source_hash,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    del model
+    return output_dir
 
 
 def compute_rule_rewards(candidates: list[RLCandidate], target_item_id: str) -> list[float]:
@@ -242,6 +424,25 @@ def compute_rewards(
     ).total
 
 
+def compute_ranking_monitor_metrics(
+    candidates: list[RLCandidate],
+    target_item_id: str,
+    ks: tuple[int, ...],
+) -> dict[str, float]:
+    predictions = [candidate.item_id for candidate in sorted(candidates, key=lambda item: item.rank)]
+    metrics = {}
+    for k in ks:
+        metrics[f"HR@{k}"] = hit_at_k(predictions, target_item_id, k)
+        metrics[f"NDCG@{k}"] = ndcg_at_k(predictions, target_item_id, k)
+        metrics[f"MRR@{k}"] = mrr_at_k(predictions, target_item_id, k)
+    return metrics
+
+
+def mean_metric_rows(rows: list[dict[str, float]]) -> dict[str, float]:
+    keys = rows[0].keys()
+    return {key: sum(row[key] for row in rows) / len(rows) for key in keys}
+
+
 def normalize_group_advantages(rewards: torch.Tensor) -> torch.Tensor:
     if rewards.numel() <= 1:
         return torch.zeros_like(rewards)
@@ -334,6 +535,7 @@ def compute_grpo_loss(
     advantages: torch.Tensor,
     clip_epsilon: float,
     kl_beta: float,
+    token_count_normalizer: torch.Tensor | None = None,
 ) -> GRPOLoss:
     """
     Args:
@@ -344,14 +546,15 @@ def compute_grpo_loss(
         advantages: [C,]
     """
     token_count = response_mask.sum().clamp_min(1.0)
+    loss_token_count = token_count if token_count_normalizer is None else token_count_normalizer.clamp_min(1.0)
     token_advantages = advantages[:, None]  # [C, 1]
     ratio = torch.exp(current_logprobs - old_logprobs)  # [C, T-1]
     unclipped = ratio * token_advantages  # [C, T-1]
     clipped = ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon) * token_advantages  # [C, T-1]
-    policy_loss = -(torch.minimum(unclipped, clipped) * response_mask).sum() / token_count  # scalar
+    policy_loss = -(torch.minimum(unclipped, clipped) * response_mask).sum() / loss_token_count  # scalar
     ref_actor_delta = reference_logprobs - current_logprobs  # [C, T-1]
     token_kl = (torch.exp(ref_actor_delta) - ref_actor_delta - 1.0) * response_mask  # [C, T-1]
-    kl = token_kl.sum() / token_count  # scalar
+    kl = token_kl.sum() / loss_token_count  # scalar
     sequence_kl = token_kl.sum(dim=1)  # [C,]
     clip_mask = ((ratio < 1.0 - clip_epsilon) | (ratio > 1.0 + clip_epsilon)).float() * response_mask
     clip_fraction = clip_mask.sum() / token_count
@@ -374,6 +577,7 @@ def constrained_sid_beam_rollout(  # noqa: C901
     prompt: str,
     num_generations: int,
     max_sid_length: int,
+    max_length: int | None = None,
 ) -> tuple[list[RLCandidate], RLRolloutStats]:
     """
     RLCandidate List, RLRolloutStats
@@ -388,6 +592,13 @@ def constrained_sid_beam_rollout(  # noqa: C901
         bos = torch.tensor([[tokenizer.bos_token_id]], dtype=torch.long, device=device)
         prompt_ids = torch.cat([bos, prompt_ids], dim=1)
         attention_mask = torch.cat([torch.ones_like(bos), attention_mask], dim=1)
+    if max_length is not None:
+        overflow = prompt_ids.shape[1] + max_sid_length - max_length
+        if overflow > 0:
+            if overflow >= prompt_ids.shape[1]:
+                raise ValueError(f"Prompt is too short to truncate for max_length={max_length}")
+            prompt_ids = prompt_ids[:, overflow:]
+            attention_mask = attention_mask[:, overflow:]
 
     beams: list[tuple[tuple[int, ...], float]] = [((), 0.0)]
     completed: list[tuple[tuple[int, ...], float]] = []
@@ -478,6 +689,175 @@ def constrained_sid_beam_rollout(  # noqa: C901
     return candidates, stats
 
 
+def _vllm_dtype(value: str) -> str:
+    return {"float32": "float32", "float16": "float16", "bfloat16": "bfloat16"}[value]
+
+
+class VLLMSIDRolloutEngine:  # noqa: C901
+    def __init__(
+        self,
+        model_path: str,
+        tokenizer_path: Path,
+        tokenizer: PreTrainedTokenizerBase,
+        trie: SIDTrie,
+        adapter_path: Path,
+        num_generations: int,
+        max_sid_length: int,
+        max_length: int,
+        dtype: str,
+        seed: int,
+        max_lora_rank: int,
+        gpu_memory_utilization: float,
+        enable_prefix_caching: bool,
+    ):
+        LLM, SamplingParams, LoRARequest = _import_vllm_rl()
+        self.SamplingParams = SamplingParams
+        self.LoRARequest = LoRARequest
+        self.tokenizer = tokenizer
+        self.trie = trie
+        self.num_generations = num_generations
+        self.max_sid_length = max_sid_length
+        self.max_length = max_length
+        self.lora_int_id = 1
+        self.lora_request = self.LoRARequest("rl_actor", self.lora_int_id, lora_path=str(adapter_path))
+        self.llm = LLM(
+            model=model_path,
+            tokenizer=str(tokenizer_path),
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            dtype=_vllm_dtype(dtype),
+            seed=seed,
+            enable_lora=True,
+            max_lora_rank=max_lora_rank,
+            max_model_len=max_length,
+            gpu_memory_utilization=gpu_memory_utilization,
+            enable_prefix_caching=enable_prefix_caching,
+        )
+
+    def set_adapter_path(self, adapter_path: Path) -> None:
+        self.lora_int_id += 1
+        self.lora_request = self.LoRARequest(f"rl_actor_{self.lora_int_id}", self.lora_int_id, lora_path=str(adapter_path))
+
+    def rollout(self, prompt: str) -> tuple[list[RLCandidate], RLRolloutStats]:
+        prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        if self.tokenizer.bos_token_id is not None:
+            prompt_ids = [self.tokenizer.bos_token_id, *prompt_ids]
+        overflow = len(prompt_ids) + self.max_sid_length - self.max_length
+        if overflow > 0:
+            if overflow >= len(prompt_ids):
+                raise ValueError(f"Prompt is too short to truncate for max_length={self.max_length}")
+            prompt_ids = prompt_ids[overflow:]
+
+        beams: list[tuple[tuple[int, ...], float]] = [((), 0.0)]
+        completed: list[tuple[tuple[int, ...], float]] = []
+        invalid_count = 0
+        next_token_cache: dict[tuple[int, ...], list[int]] = {}
+        item_cache: dict[tuple[int, ...], str | None] = {}
+
+        def next_token_ids(prefix: tuple[int, ...]) -> list[int]:
+            if prefix not in next_token_cache:
+                next_token_cache[prefix] = self.trie.next_token_ids(prefix)
+            return next_token_cache[prefix]
+
+        def item_id(prefix: tuple[int, ...]) -> str | None:
+            if prefix not in item_cache:
+                item_cache[prefix] = self.trie.item_id(prefix)
+            return item_cache[prefix]
+
+        for _ in range(self.max_sid_length):
+            active_rows = [(prefix, score, next_token_ids(prefix)) for prefix, score in beams]
+            valid_rows = [(prefix, score, allowed_ids) for prefix, score, allowed_ids in active_rows if allowed_ids]
+            invalid_count += len(active_rows) - len(valid_rows)
+            if not valid_rows:
+                break
+
+            prompts = [{"prompt_token_ids": [*prompt_ids, *prefix]} for prefix, _, _ in valid_rows]
+            sampling_params = [
+                self.SamplingParams(
+                    temperature=0.0,
+                    max_tokens=1,
+                    logprobs=min(self.num_generations, len(allowed_ids)),
+                    allowed_token_ids=allowed_ids,
+                    detokenize=False,
+                    skip_special_tokens=False,
+                )
+                for _, _, allowed_ids in valid_rows
+            ]
+            outputs = self.llm.generate(
+                prompts,
+                sampling_params,
+                use_tqdm=False,
+                lora_request=self.lora_request,
+            )
+
+            beam_candidates: list[tuple[tuple[int, ...], float]] = []
+            for output, (prefix, score, allowed_ids) in zip(outputs, valid_rows):
+                next_scores = self._extract_next_scores(output, allowed_ids)
+                for token_id, token_score in next_scores:
+                    next_prefix = (*prefix, token_id)
+                    next_score = score + token_score
+                    if item_id(next_prefix) is not None:
+                        completed.append((next_prefix, next_score))
+                    if next_token_ids(next_prefix):
+                        beam_candidates.append((next_prefix, next_score))
+
+            beams = sorted(beam_candidates, key=lambda row: row[1], reverse=True)[: self.num_generations]
+            if len(completed) >= self.num_generations and not beams:
+                break
+
+        candidates, duplicate_count = self._deduplicate_completed(completed, item_id)
+        return candidates, RLRolloutStats(
+            invalid_count=invalid_count,
+            duplicate_count=duplicate_count,
+            completed_count=len(completed),
+        )
+
+    def _extract_next_scores(self, output: Any, allowed_ids: list[int]) -> list[tuple[int, float]]:
+        completion = output.outputs[0]
+        allowed = set(allowed_ids)
+        scores: dict[int, float] = {}
+        if completion.logprobs:
+            for token_id, logprob in completion.logprobs[0].items():
+                int_token_id = int(token_id)
+                if int_token_id in allowed:
+                    value = getattr(logprob, "logprob", logprob)
+                    scores[int_token_id] = float(value)
+        if not scores and completion.token_ids:
+            token_id = int(completion.token_ids[0])
+            if token_id in allowed:
+                scores[token_id] = float(completion.cumulative_logprob or 0.0)
+        return sorted(scores.items(), key=lambda row: row[1], reverse=True)[: self.num_generations]
+
+    def _deduplicate_completed(
+        self,
+        completed: list[tuple[tuple[int, ...], float]],
+        item_id: Callable[[tuple[int, ...]], str | None],
+    ) -> tuple[list[RLCandidate], int]:
+        seen_item_ids: set[str] = set()
+        candidates: list[RLCandidate] = []
+        duplicate_count = 0
+        for token_ids, score in sorted(completed, key=lambda row: row[1], reverse=True):
+            completed_item_id = item_id(token_ids)
+            if completed_item_id is None:
+                continue
+            if completed_item_id in seen_item_ids:
+                duplicate_count += 1
+                continue
+            seen_item_ids.add(completed_item_id)
+            candidates.append(
+                RLCandidate(
+                    item_id=completed_item_id,
+                    sid=self.tokenizer.decode(token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False),
+                    token_ids=token_ids,
+                    score=score,
+                    rank=len(candidates),
+                )
+            )
+            if len(candidates) == self.num_generations:
+                break
+        return candidates, duplicate_count
+
+
 class RLModule(L.LightningModule):
     def __init__(
         self,
@@ -501,6 +881,12 @@ class RLModule(L.LightningModule):
         scheduler: Callable | None,
         max_sid_length: int | None = None,
         attn_implementation: str | None = None,
+        logprob_micro_batch_size: int | None = None,
+        optimizer_accumulate_batches: int = 1,
+        rollout_backend: str = "hf",
+        vllm_gpu_memory_utilization: float = 0.30,
+        vllm_enable_prefix_caching: bool = True,
+        vllm_max_lora_rank: int = 16,
         use_partial_match_reward: bool = True,
         partial_match_lambda: float = 0.2,
         use_long_tail_reward: bool = False,
@@ -511,12 +897,22 @@ class RLModule(L.LightningModule):
         self.save_hyperparameters(logger=False, ignore=["optimizer", "scheduler"])
         self._optimizer = optimizer
         self._scheduler = scheduler
+        self.automatic_optimization = False
 
         self.sft_export_dir = Path(sft_export_dir)
         self.tokenizer, self.sid_index, self.original_vocab_size = self._load_tokenizer_and_sid_index()
         self.trie = SIDTrie(self.tokenizer, self.sid_index)
         self.max_sid_length = max_sid_length or max(len(tokens) for tokens in self.sid_index.values())
         self.item_popularity = self._load_item_popularity()
+        self.adapter_dir = prepare_lora_only_adapter_dir(
+            self.sft_export_dir / "adapter",
+            self.original_vocab_size,
+            len(self.tokenizer),
+        )
+        self.vllm_adapter_step = 0
+        self.vllm_runtime_adapter_dir = self.sft_export_dir / "adapter_vllm_runtime"
+        self.vllm_augmented_base_dir = self.sft_export_dir / "vllm_augmented_base"
+        self.rollout_engine: VLLMSIDRolloutEngine | None = None
 
         self.model = self._build_adapter_model()  # adapter: actor* and reference
         self._validate_trainable_parameters()
@@ -594,7 +990,7 @@ class RLModule(L.LightningModule):
         return BitsAndBytesConfig(load_in_8bit=True)
 
     def _build_adapter_model(self) -> torch.nn.Module:
-        adapter_dir = self.sft_export_dir / "adapter"
+        adapter_dir = self.adapter_dir
         if not adapter_dir.exists():
             raise FileNotFoundError(f"Missing SFT adapter export: {adapter_dir}")
         PeftModel, prepare_model_for_kbit_training = _import_peft_rl()
@@ -609,6 +1005,7 @@ class RLModule(L.LightningModule):
             model_kwargs["attn_implementation"] = self.hparams.attn_implementation
         base_model = AutoModelForCausalLM.from_pretrained(self.hparams.pretrained_model_name_or_path, **model_kwargs)
         base_model.resize_token_embeddings(len(self.tokenizer))
+        self._load_new_token_embeddings_into_base(base_model, adapter_dir)
         if quantization_config is not None:
             base_model = prepare_model_for_kbit_training(
                 base_model,
@@ -626,6 +1023,22 @@ class RLModule(L.LightningModule):
         model.config.use_cache = False
         self._freeze_to_actor_lora_parameters(model)
         return model
+
+    def _load_new_token_embeddings_into_base(self, base_model: torch.nn.Module, adapter_dir: Path) -> None:
+        rows = _new_embedding_rows_from_adapter(adapter_dir, self.original_vocab_size, len(self.tokenizer))
+        input_embedding = base_model.get_input_embeddings()
+        if input_embedding is None:
+            raise ValueError("Base model must expose input embeddings")
+        input_rows = rows["input_embeddings"].to(device=input_embedding.weight.device, dtype=input_embedding.weight.dtype)
+        with torch.no_grad():
+            input_embedding.weight[self.original_vocab_size : len(self.tokenizer)].copy_(input_rows)
+
+            output_embedding = base_model.get_output_embeddings()
+            if output_embedding is None or output_embedding.weight is input_embedding.weight:
+                return
+            output_rows = rows.get("output_embeddings", rows["input_embeddings"])
+            output_rows = output_rows.to(device=output_embedding.weight.device, dtype=output_embedding.weight.dtype)
+            output_embedding.weight[self.original_vocab_size : len(self.tokenizer)].copy_(output_rows)
 
     def _freeze_to_actor_lora_parameters(self, model: torch.nn.Module) -> None:
         actor_markers = (".lora_A.actor.", ".lora_B.actor.", ".lora_embedding_A.actor", ".lora_embedding_B.actor")
@@ -665,7 +1078,70 @@ class RLModule(L.LightningModule):
         self.model.set_adapter("reference")
         self._freeze_to_actor_lora_parameters(self.model)
 
+    def _save_vllm_actor_adapter(self) -> Path:
+        self.vllm_adapter_step += 1
+        adapter_dir = self.vllm_runtime_adapter_dir / f"step_{self.vllm_adapter_step:08d}"
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+        peft_save_dir = adapter_dir / "_peft"
+        self.model.save_pretrained(peft_save_dir, selected_adapters=["actor"], save_embedding_layers=False)
+        actor_save_dir = peft_save_dir / "actor"
+        source_dir = actor_save_dir if actor_save_dir.exists() else peft_save_dir
+        for path in source_dir.iterdir():
+            if path.is_file():
+                shutil.move(str(path), adapter_dir / path.name)
+        shutil.rmtree(peft_save_dir)
+        return adapter_dir
+
+    def _ensure_vllm_rollout_engine(self) -> VLLMSIDRolloutEngine:
+        if self.rollout_engine is not None:
+            return self.rollout_engine
+        tokenizer_path = self.sft_export_dir / "tokenizer"
+        if not tokenizer_path.exists():
+            raise FileNotFoundError(f"Missing tokenizer export for vLLM rollout: {tokenizer_path}")
+        augmented_base_dir = prepare_augmented_vllm_base_dir(
+            base_model_path=self.hparams.pretrained_model_name_or_path,
+            tokenizer_dir=tokenizer_path,
+            adapter_dir=self.adapter_dir,
+            output_dir=self.vllm_augmented_base_dir,
+            original_vocab_size=self.original_vocab_size,
+            augmented_vocab_size=len(self.tokenizer),
+            torch_dtype=self.hparams.torch_dtype,
+        )
+        actor_adapter_dir = self._save_vllm_actor_adapter()
+        self.rollout_engine = VLLMSIDRolloutEngine(
+            model_path=str(augmented_base_dir),
+            tokenizer_path=augmented_base_dir,
+            tokenizer=self.tokenizer,
+            trie=self.trie,
+            adapter_path=actor_adapter_dir,
+            num_generations=self.hparams.num_generations,
+            max_sid_length=self.max_sid_length,
+            max_length=self.hparams.max_length,
+            dtype=self.hparams.torch_dtype,
+            seed=int(self.trainer.global_rank if self.trainer is not None else 0),
+            max_lora_rank=self.hparams.vllm_max_lora_rank,
+            gpu_memory_utilization=self.hparams.vllm_gpu_memory_utilization,
+            enable_prefix_caching=self.hparams.vllm_enable_prefix_caching,
+        )
+        return self.rollout_engine
+
+    def _refresh_vllm_actor_adapter(self) -> None:
+        if self.rollout_engine is None:
+            return
+        self.rollout_engine.set_adapter_path(self._save_vllm_actor_adapter())
+
     def _rollout_one(self, prompt: str) -> tuple[list[RLCandidate], RLRolloutStats]:
+        if self.hparams.rollout_backend == "vllm":
+            was_training = self.model.training
+            self.model.eval()
+            self._set_actor()
+            with torch.inference_mode():
+                candidates, stats = self._ensure_vllm_rollout_engine().rollout(prompt)
+            if was_training:
+                self.model.train()
+            return candidates, stats
+        if self.hparams.rollout_backend != "hf":
+            raise ValueError(f"Unsupported rollout_backend={self.hparams.rollout_backend!r}")
         was_training = self.model.training
         self.model.eval()
         self._set_actor()
@@ -677,6 +1153,7 @@ class RLModule(L.LightningModule):
                 prompt=prompt,
                 num_generations=self.hparams.num_generations,
                 max_sid_length=self.max_sid_length,
+                max_length=self.hparams.max_length,
             )
         if was_training:
             self.model.train()
@@ -691,6 +1168,7 @@ class RLModule(L.LightningModule):
         rank_rewards_by_group = []
         partial_rewards_by_group = []
         long_tail_rewards_by_group = []
+        ranking_metric_rows = []
         target_hits = 0
         short_groups = 0
         invalid_count = 0
@@ -700,6 +1178,7 @@ class RLModule(L.LightningModule):
         prompts = batch["prompts"]  # list
         target_item_ids = batch["target_item_ids"]  # list
         target_sids = batch["target_sids"]  # list
+        ranking_ks = tuple(sorted({1, 3, 5, 10, int(self.hparams.num_generations)}))
         for prompt, target_item_id, target_sid in zip(prompts, target_item_ids, target_sids):
             candidates, stats = self._rollout_one(prompt)
             if not candidates:
@@ -724,6 +1203,9 @@ class RLModule(L.LightningModule):
             rank_rewards_by_group.append(reward_breakdown.rank)
             partial_rewards_by_group.append(reward_breakdown.partial)
             long_tail_rewards_by_group.append(reward_breakdown.long_tail)
+            ranking_metric_rows.append(
+                compute_ranking_monitor_metrics(candidates, target_item_id=target_item_id, ks=ranking_ks)
+            )
             target_hits += int(any(candidate.item_id == target_item_id for candidate in candidates))
             short_groups += int(len(candidates) < self.hparams.num_generations)
             invalid_count += stats.invalid_count
@@ -750,6 +1232,7 @@ class RLModule(L.LightningModule):
             short_group_rate=short_groups / batch_size,
             invalid_rate=invalid_count / max(normalizer, 1),
             duplicate_rate=duplicate_count / max(normalizer, 1),
+            rec_metrics=mean_metric_rows(ranking_metric_rows),
         )
 
     def _compute_adapter_logprobs(
@@ -758,6 +1241,7 @@ class RLModule(L.LightningModule):
         token_ids: list[tuple[int, ...]],
         adapter_name: str,
         grad: bool,
+        logits_to_keep: int | None = None,
     ) -> ResponseLogProbs:
         was_training = self.model.training
         self.model.eval()
@@ -774,15 +1258,62 @@ class RLModule(L.LightningModule):
             max_length=self.hparams.max_length,
             device=self.device,
         )
-        context = nullcontext() if grad else torch.no_grad()
+        if logits_to_keep is None:
+            max_response_len = max(len(ids) for ids in token_ids)
+            logits_to_keep = max_response_len + 1
+        context = nullcontext() if grad else torch.inference_mode()
         with context:
-            outputs = self.model(input_ids=encoded["input_ids"], attention_mask=encoded["attention_mask"])
+            try:
+                outputs = self.model(
+                    input_ids=encoded["input_ids"],
+                    attention_mask=encoded["attention_mask"],
+                    use_cache=False,
+                    logits_to_keep=logits_to_keep,
+                )
+            except TypeError:
+                outputs = self.model(input_ids=encoded["input_ids"], attention_mask=encoded["attention_mask"], use_cache=False)
+            logits = outputs.logits
+            input_ids = encoded["input_ids"]
+            response_mask = encoded["response_mask"]
+            if logits.shape[1] != logits_to_keep:
+                logits = logits[:, -logits_to_keep:, :]
+            input_ids = input_ids[:, -logits.shape[1] :]
+            response_mask = response_mask[:, -logits.shape[1] :]
             logprobs: ResponseLogProbs = gather_response_logprobs(
-                outputs.logits, encoded["input_ids"], encoded["response_mask"]
+                logits, input_ids, response_mask
             )
         if was_training:
             self.model.train()
         return logprobs
+
+    def _logprob_chunks(
+        self,
+        prompts: list[str],
+        token_ids: list[tuple[int, ...]],
+    ) -> list[tuple[int, int]]:
+        chunk_size = self.hparams.logprob_micro_batch_size or len(token_ids)
+        if chunk_size <= 0:
+            raise ValueError(f"logprob_micro_batch_size must be positive, got {chunk_size}")
+        return [(start, min(start + chunk_size, len(token_ids))) for start in range(0, len(token_ids), chunk_size)]
+
+    def _compute_adapter_logprobs_chunks(
+        self,
+        prompts: list[str],
+        token_ids: list[tuple[int, ...]],
+        adapter_name: str,
+        grad: bool,
+    ) -> list[ResponseLogProbs]:
+        chunks = self._logprob_chunks(prompts, token_ids)
+        return [
+            self._compute_adapter_logprobs(
+                prompts[start:end],
+                token_ids[start:end],
+                adapter_name=adapter_name,
+                grad=grad,
+                logits_to_keep=max(len(ids) for ids in token_ids[start:end]) + 1,
+            )
+            for start, end in chunks
+        ]
 
     def _log_rollout_metrics(self, rollout: RolloutBatch, stage: str, on_step: bool, prog_bar: bool) -> None:
         self.log(
@@ -897,35 +1428,109 @@ class RLModule(L.LightningModule):
             on_epoch=True,
             batch_size=rollout.batch_size,
         )
+        self.log_dict(
+            {f"{stage}/rec_{key}": value for key, value in rollout.rec_metrics.items()},
+            prog_bar=False,
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=rollout.batch_size,
+        )
+
+    def _accumulate_grad_batches(self) -> int:
+        accumulate = int(self.hparams.optimizer_accumulate_batches)
+        if not isinstance(accumulate, int):
+            raise ValueError(f"RL manual optimization expects integer optimizer_accumulate_batches, got {accumulate!r}")
+        if accumulate <= 0:
+            raise ValueError(f"optimizer_accumulate_batches must be positive, got {accumulate}")
+        return accumulate
+
+    def _should_step_optimizer(self, batch_idx: int, accumulate: int) -> bool:
+        num_training_batches = self.trainer.num_training_batches
+        is_last_batch = isinstance(num_training_batches, int) and batch_idx + 1 >= num_training_batches
+        return (batch_idx + 1) % accumulate == 0 or is_last_batch
+
+    def _step_scheduler(self) -> None:
+        scheduler = self.lr_schedulers()
+        if scheduler is None:
+            return
+        if isinstance(scheduler, list):
+            for item in scheduler:
+                item.step()
+            return
+        scheduler.step()
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
-        _ = batch_idx
+        optimizer = self.optimizers()
+        accumulate = self._accumulate_grad_batches()
+        if batch_idx % accumulate == 0:
+            optimizer.zero_grad(set_to_none=True)
+
         rollout: RolloutBatch = self._build_rollout_batch(batch)
         advantages = rollout.advantages.to(self.device)  # [C,]
-        with torch.no_grad():
-            old_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
+        chunks = self._logprob_chunks(rollout.prompts, rollout.token_ids)
+        with torch.inference_mode():
+            old_logprob_chunks = self._compute_adapter_logprobs_chunks(
                 rollout.prompts, rollout.token_ids, adapter_name="actor", grad=False
             )
-            reference_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
+            reference_logprob_chunks = self._compute_adapter_logprobs_chunks(
                 rollout.prompts,
                 rollout.token_ids,
                 adapter_name="reference",
                 grad=False,
             )
-        current_logprobs: ResponseLogProbs = self._compute_adapter_logprobs(
-            rollout.prompts, rollout.token_ids, adapter_name="actor", grad=True
+
+        total_token_count = sum(chunk.response_mask.sum() for chunk in old_logprob_chunks).to(self.device).clamp_min(1.0)
+        total_loss = torch.zeros((), device=self.device)
+        total_policy_loss = torch.zeros((), device=self.device)
+        total_kl = torch.zeros((), device=self.device)
+        kl_seq_sum = torch.zeros((), device=self.device)
+        clip_token_sum = torch.zeros((), device=self.device)
+        ref_delta_token_sum = torch.zeros((), device=self.device)
+
+        for (start, end), old_logprobs, reference_logprobs in zip(chunks, old_logprob_chunks, reference_logprob_chunks):
+            current_logprobs = self._compute_adapter_logprobs(
+                rollout.prompts[start:end],
+                rollout.token_ids[start:end],
+                adapter_name="actor",
+                grad=True,
+                logits_to_keep=max(len(ids) for ids in rollout.token_ids[start:end]) + 1,
+            )
+            chunk_loss = compute_grpo_loss(
+                current_logprobs=current_logprobs.token_logprobs,
+                old_logprobs=old_logprobs.token_logprobs.detach(),
+                reference_logprobs=reference_logprobs.token_logprobs.detach(),
+                response_mask=current_logprobs.response_mask,
+                advantages=advantages[start:end],
+                clip_epsilon=self.hparams.clip_epsilon,
+                kl_beta=self.hparams.kl_beta,
+                token_count_normalizer=total_token_count,
+            )
+            if not torch.isfinite(chunk_loss.loss):
+                raise ValueError(f"Non-finite train loss: {chunk_loss.loss}")
+            self.manual_backward(chunk_loss.loss / accumulate)
+
+            chunk_token_count = current_logprobs.response_mask.sum().detach()
+            total_loss = total_loss + chunk_loss.loss.detach()
+            total_policy_loss = total_policy_loss + chunk_loss.policy_loss.detach()
+            total_kl = total_kl + chunk_loss.kl.detach()
+            kl_seq_sum = kl_seq_sum + chunk_loss.kl_seq_mean.detach() * (end - start)
+            clip_token_sum = clip_token_sum + chunk_loss.clip_fraction.detach() * chunk_token_count
+            ref_delta_token_sum = ref_delta_token_sum + chunk_loss.ref_actor_logprob_delta_mean.detach() * chunk_token_count
+
+        if self._should_step_optimizer(batch_idx, accumulate):
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            self._step_scheduler()
+            self._refresh_vllm_actor_adapter()
+
+        loss = GRPOLoss(
+            loss=total_loss,
+            policy_loss=total_policy_loss,
+            kl=total_kl,
+            kl_seq_mean=kl_seq_sum / rollout.candidate_count,
+            clip_fraction=clip_token_sum / total_token_count,
+            ref_actor_logprob_delta_mean=ref_delta_token_sum / total_token_count,
         )
-        loss = compute_grpo_loss(
-            current_logprobs=current_logprobs.token_logprobs,
-            old_logprobs=old_logprobs.token_logprobs.detach(),
-            reference_logprobs=reference_logprobs.token_logprobs.detach(),
-            response_mask=current_logprobs.response_mask,
-            advantages=advantages,
-            clip_epsilon=self.hparams.clip_epsilon,
-            kl_beta=self.hparams.kl_beta,
-        )
-        if not torch.isfinite(loss.loss):
-            raise ValueError(f"Non-finite train loss: {loss.loss}")
         self._set_actor()
         self.log("train/loss", loss.loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=rollout.batch_size)
         self.log(

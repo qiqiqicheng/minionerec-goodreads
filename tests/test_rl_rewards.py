@@ -5,6 +5,7 @@ from minionerec_goodreads.models.rl import (
     compute_long_tail_rewards,
     compute_partial_match_rewards,
     compute_rank_rewards,
+    compute_ranking_monitor_metrics,
     compute_reward_breakdown,
     compute_rewards,
     compute_rule_rewards,
@@ -37,6 +38,17 @@ def test_combined_reward_handles_target_absent_group() -> None:
     rewards = compute_rewards(candidates, target_item_id="9", rank_reward_lambda=0.1)
 
     assert torch.allclose(rewards, torch.tensor([-0.1, -0.06666667, -0.03333334]), atol=1e-6)
+
+
+def test_ranking_monitor_metrics_are_rank_sensitive() -> None:
+    candidates = [_candidate("1", 0), _candidate("target", 1), _candidate("3", 2)]
+
+    metrics = compute_ranking_monitor_metrics(candidates, target_item_id="target", ks=(1, 3))
+
+    assert metrics["HR@1"] == 0.0
+    assert metrics["HR@3"] == 1.0
+    assert metrics["MRR@3"] == 0.5
+    assert torch.isclose(torch.tensor(metrics["NDCG@3"]), torch.tensor(1.0 / 1.5849625), atol=1e-6)
 
 
 def test_partial_match_reward_increases_with_longer_prefix() -> None:

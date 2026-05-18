@@ -4,7 +4,7 @@ defaults:
   - data: rl
   - model: rl_lora
   - callbacks: rl
-  - logger: csv
+  - logger: wandb
   - trainer: gpu
   - paths: default
   - extras: default
@@ -16,33 +16,48 @@ defaults:
   - _self_
 
 trainer:
-  max_epochs: 12
+  max_epochs: 4
   log_every_n_steps: 10
-  accumulate_grad_batches: 8
+  accumulate_grad_batches: 1
+
+logger:
+  wandb:
+    group: "rl"
+    tags: ["rl", "train", "large epochs", "ndcg"]
 
 data:
   sft_export_dir: ${paths.data_dir}/ckpts/sft/epoch_4 # TODO
   batch_size: 1
   max_train_samples: null # debug
   max_valid_samples: null # debug
+  num_workers: 12
 
 model:
-  max_length: 1024
-  num_generations: 4
+  max_length: 512
+  num_generations: 16
+  logprob_micro_batch_size: 8
+  optimizer_accumulate_batches: 8
+  rollout_backend: "vllm"
+  vllm_gpu_memory_utilization: 0.20
+  # rollout_backend: "hf"
   rank_reward_lambda: 0.1
   use_partial_match_reward: True
   partial_match_lambda: 0.2
-  use_long_tail_reward: False
+  use_long_tail_reward: True
   long_tail_reward_lambda: 0.05
   kl_beta: 0.02
   clip_epsilon: 0.2
   warmup_ratio: 0.03
-  attn_implementation: null
-  load_in_4bit: True
+  # attn_implementation: "sdpa"
+  attn_implementation: "flash_attention_2"
+  # load_in_4bit: True
+  load_in_4bit: False
   load_in_8bit: False
   bnb_4bit_compute_dtype: "bfloat16"
   bnb_4bit_quant_type: "nf4"
   bnb_4bit_use_double_quant: True
+  gradient_checkpointing: False
+  # gradient_checkpointing: True
 
 task_name: "train_rl"
 tags: ["rl", "grpo", "goodreads"]
@@ -52,4 +67,4 @@ test: False
 ckpt_path: null
 
 seed: 728
-optimized_metric: "val/rule_hit_at_g"
+optimized_metric: "val/rec_NDCG@10"

@@ -9,13 +9,13 @@ defaults:
 model_checkpoint:
   dirpath: ${paths.output_dir}/checkpoints
   filename: "epoch_{epoch:03d}"
-  monitor: "val/rule_hit_at_g"
+  monitor: "val/rec_NDCG@10"
   mode: "max"
   save_last: True
   auto_insert_metric_name: False
 
 early_stopping:
-  monitor: "val/rule_hit_at_g"
+  monitor: "val/rec_NDCG@10"
   patience: 2
   mode: "max"
 
