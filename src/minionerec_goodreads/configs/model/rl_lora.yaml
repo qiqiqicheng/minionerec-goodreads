@@ -16,6 +16,11 @@ clip_epsilon: 0.2
 warmup_ratio: 0.03
 gradient_checkpointing: True
 torch_dtype: "bfloat16"
+load_in_4bit: True
+load_in_8bit: False
+bnb_4bit_compute_dtype: "bfloat16"
+bnb_4bit_quant_type: "nf4"
+bnb_4bit_use_double_quant: True
 max_sid_length: null
 attn_implementation: "flash_attention_2"
 

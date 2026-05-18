@@ -10,8 +10,8 @@ sft-stats:
 
 .PHONY: rl
 rl:
-	@uv sync
-	@uv run python -m src.minionerec_goodreads.scripts.rl.train_rl
+	@uv sync --group qlora
+	@uv run --group qlora python -m src.minionerec_goodreads.scripts.rl.train_rl
 
 .PHONY: eval
 eval:

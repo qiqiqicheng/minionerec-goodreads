@@ -16,11 +16,11 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
 import torch
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoModelForCausalLM, PreTrainedTokenizerBase
 
 from minionerec_goodreads.dataset.sft_dataset import load_split_csv, parse_list_column
 from minionerec_goodreads.metrics.rec import ranking_metrics
-from minionerec_goodreads.utils.sft import build_item_sid_map, load_sid_index
+from minionerec_goodreads.utils.sft import build_item_sid_map, load_sid_index, load_tokenizer
 from minionerec_goodreads.utils.sft_generation import (
     GeneratedItem,
     GenerationStats,
@@ -330,7 +330,7 @@ def load_export_bundle(export_dir: Path) -> ExportBundle:
     if not model_artifact.exists():
         raise FileNotFoundError(f"Missing exported model artifact: {model_artifact}")
 
-    tokenizer = AutoTokenizer.from_pretrained(export_dir / "tokenizer", trust_remote_code=True)
+    tokenizer = load_tokenizer(export_dir / "tokenizer", trust_remote_code=True)
     if tokenizer.eos_token_id is None:
         raise ValueError("Exported tokenizer must define eos_token_id")
     if tokenizer.pad_token_id is None:

@@ -48,13 +48,37 @@ def add_sid_tokens(tokenizer: PreTrainedTokenizerBase, sid_index: dict[str, list
     return sid_tokens
 
 
+def _tokenizer_compat_kwargs(
+    pretrained_model_name_or_path: str | Path,
+    kwargs: dict[str, object],
+) -> dict[str, object]:
+    config_path = Path(pretrained_model_name_or_path) / "tokenizer_config.json"
+    if not config_path.exists():
+        return kwargs
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    extra_special_tokens = config.get("extra_special_tokens")
+    if not isinstance(extra_special_tokens, list):
+        return kwargs
+
+    fixed_kwargs = dict(kwargs)
+    fixed_kwargs.setdefault("extra_special_tokens", {})
+    fixed_kwargs.setdefault("additional_special_tokens", extra_special_tokens)
+    return fixed_kwargs
+
+
+def load_tokenizer(pretrained_model_name_or_path: str | Path, **kwargs: object) -> PreTrainedTokenizerBase:
+    tokenizer_kwargs = _tokenizer_compat_kwargs(pretrained_model_name_or_path, kwargs)
+    return AutoTokenizer.from_pretrained(pretrained_model_name_or_path, **tokenizer_kwargs)
+
+
 def build_tokenizer(
     pretrained_model_name_or_path: str,
     sid_index_path: str | Path,
     trust_remote_code: bool = True,
 ) -> tuple[PreTrainedTokenizerBase, dict[str, list[str]], int]:
     sid_index = load_sid_index(sid_index_path)
-    tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+    tokenizer = load_tokenizer(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
     if tokenizer.eos_token_id is None:
         raise ValueError("Tokenizer must define eos_token_id")
     if tokenizer.pad_token_id is None:

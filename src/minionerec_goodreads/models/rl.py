@@ -12,11 +12,11 @@ from typing import Any, Callable
 import lightning as L
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig, PreTrainedTokenizerBase
 
 from minionerec_goodreads.dataset.sft_dataset import load_split_csv
-from minionerec_goodreads.models.sft import _resolve_dtype
-from minionerec_goodreads.utils.sft import build_tokenizer, load_sid_index
+from minionerec_goodreads.models.sft import _import_bitsandbytes, _resolve_dtype
+from minionerec_goodreads.utils.sft import build_tokenizer, load_sid_index, load_tokenizer
 from minionerec_goodreads.utils.sft_generation import forward_last_token_logits
 from minionerec_goodreads.utils.sid_trie import SIDTrie
 
@@ -117,12 +117,12 @@ class RolloutBatch:
     duplicate_rate: float
 
 
-def _import_peft_model() -> Any:
+def _import_peft_rl() -> tuple[Any, Any]:
     try:
-        from peft import PeftModel
+        from peft import PeftModel, prepare_model_for_kbit_training
     except ImportError as error:
         raise ImportError("RL LoRA training requires peft to be installed") from error
-    return PeftModel
+    return PeftModel, prepare_model_for_kbit_training
 
 
 def compute_rule_rewards(candidates: list[RLCandidate], target_item_id: str) -> list[float]:
@@ -492,6 +492,11 @@ class RLModule(L.LightningModule):
         warmup_ratio: float,
         gradient_checkpointing: bool,
         torch_dtype: str,
+        load_in_4bit: bool,
+        load_in_8bit: bool,
+        bnb_4bit_compute_dtype: str,
+        bnb_4bit_quant_type: str,
+        bnb_4bit_use_double_quant: bool,
         optimizer: Callable,
         scheduler: Callable | None,
         max_sid_length: int | None = None,
@@ -526,7 +531,7 @@ class RLModule(L.LightningModule):
         manifest_path = self.sft_export_dir / "manifest.json"
 
         if export_tokenizer_path.exists() and export_sid_index_path.exists():
-            tokenizer = AutoTokenizer.from_pretrained(export_tokenizer_path, trust_remote_code=True)
+            tokenizer = load_tokenizer(export_tokenizer_path, trust_remote_code=True)
             if tokenizer.pad_token_id is None:
                 tokenizer.pad_token = tokenizer.eos_token
             tokenizer.padding_side = "right"
@@ -535,7 +540,7 @@ class RLModule(L.LightningModule):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 original_vocab_size = int(manifest["original_vocab_size"])
             else:
-                base_tokenizer = AutoTokenizer.from_pretrained(
+                base_tokenizer = load_tokenizer(
                     self.hparams.pretrained_model_name_or_path,
                     trust_remote_code=True,
                 )
@@ -571,20 +576,45 @@ class RLModule(L.LightningModule):
     def _target_token_ids(self, target_sid: str) -> tuple[int, ...]:
         return tuple(self.tokenizer.encode(target_sid, add_special_tokens=False))
 
+    def _build_quantization_config(self) -> BitsAndBytesConfig | None:
+        if self.hparams.load_in_4bit and self.hparams.load_in_8bit:
+            raise ValueError("Only one of load_in_4bit and load_in_8bit can be enabled")
+        if not self.hparams.load_in_4bit and not self.hparams.load_in_8bit:
+            return None
+        if not torch.cuda.is_available():
+            raise RuntimeError("Quantized RL LoRA loading requires CUDA. Disable load_in_4bit/load_in_8bit for CPU runs.")
+        _import_bitsandbytes()
+        if self.hparams.load_in_4bit:
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=_resolve_dtype(self.hparams.bnb_4bit_compute_dtype),
+                bnb_4bit_quant_type=self.hparams.bnb_4bit_quant_type,
+                bnb_4bit_use_double_quant=self.hparams.bnb_4bit_use_double_quant,
+            )
+        return BitsAndBytesConfig(load_in_8bit=True)
+
     def _build_adapter_model(self) -> torch.nn.Module:
         adapter_dir = self.sft_export_dir / "adapter"
         if not adapter_dir.exists():
             raise FileNotFoundError(f"Missing SFT adapter export: {adapter_dir}")
-        PeftModel = _import_peft_model()
+        PeftModel, prepare_model_for_kbit_training = _import_peft_rl()
         model_kwargs: dict[str, Any] = {
             "torch_dtype": _resolve_dtype(self.hparams.torch_dtype),
             "trust_remote_code": True,
         }
+        quantization_config = self._build_quantization_config()
+        if quantization_config is not None:
+            model_kwargs["quantization_config"] = quantization_config
         if self.hparams.attn_implementation is not None:
             model_kwargs["attn_implementation"] = self.hparams.attn_implementation
         base_model = AutoModelForCausalLM.from_pretrained(self.hparams.pretrained_model_name_or_path, **model_kwargs)
         base_model.resize_token_embeddings(len(self.tokenizer))
-        if self.hparams.gradient_checkpointing:
+        if quantization_config is not None:
+            base_model = prepare_model_for_kbit_training(
+                base_model,
+                use_gradient_checkpointing=self.hparams.gradient_checkpointing,
+            )
+        elif self.hparams.gradient_checkpointing:
             base_model.gradient_checkpointing_enable()
             if hasattr(base_model, "enable_input_require_grads"):
                 base_model.enable_input_require_grads()
@@ -614,8 +644,17 @@ class RLModule(L.LightningModule):
         total_params = sum(parameter.numel() for parameter in self.model.parameters())
         trainable_params = sum(parameter.numel() for parameter in self.model.parameters() if parameter.requires_grad)
         ratio = 100 * trainable_params / total_params
+        mode = "lora"
+        if self.hparams.load_in_4bit:
+            mode = "lora_4bit"
+        elif self.hparams.load_in_8bit:
+            mode = "lora_8bit"
         log.info(
-            "RL train mode=lora trainable_params=%s total_params=%s ratio=%.4f%%", trainable_params, total_params, ratio
+            "RL train mode=%s trainable_params=%s total_params=%s ratio=%.4f%%",
+            mode,
+            trainable_params,
+            total_params,
+            ratio,
         )
 
     def _set_actor(self) -> None:
